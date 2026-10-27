@@ -1,0 +1,10 @@
+**
+!deploy/
+!deploy/relay/
+!deploy/relay/Dockerfile
+!deploy/relay/package.json
+!deploy/relay/package-lock.json
+!relay/
+!relay/*.ts
+!shared/
+!shared/protocol.ts

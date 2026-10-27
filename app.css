@@ -1,0 +1,122 @@
+/* Natural content height, bounded only by the viewport (including the launcher,
+   gap and safe-area margins). Short discussions do not stretch to fill it. */
+.multiplayer-widget-dialog {
+  max-height: max(
+    0px,
+    calc(
+      100dvh - max(1rem, env(safe-area-inset-top)) -
+        max(1rem, env(safe-area-inset-bottom)) - 2.75rem
+    )
+  );
+}
+
+/* Propagate the dialog's available space down to the comments. Only the list
+   shrinks/scrolls during normal use; the composer remains beneath it. */
+.multiplayer-widget-body,
+.multiplayer-widget-content,
+.multiplayer-widget-thread,
+.multiplayer-widget-discussions {
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.multiplayer-widget-content,
+.multiplayer-widget-thread,
+.multiplayer-widget-discussions {
+  gap: 0.75rem;
+}
+
+.multiplayer-widget-content > *,
+.multiplayer-widget-thread > *,
+.multiplayer-widget-discussions > * {
+  flex-shrink: 0;
+}
+
+.multiplayer-widget-content > .multiplayer-widget-thread,
+.multiplayer-widget-thread > .multiplayer-widget-discussions,
+.multiplayer-widget-discussions > .multiplayer-widget-comments {
+  flex-shrink: 1;
+}
+
+.multiplayer-widget-comments {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* A long selected quotation or manually enlarged textarea must not consume the
+   whole window. These auxiliary sections scroll only if they hit their cap. */
+.multiplayer-widget-composer {
+  max-height: 45dvh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.multiplayer-widget-sharing {
+  max-height: 25dvh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* Extremely short viewports (e.g. a landscape phone or on-screen keyboard)
+   fall back to one body scroller rather than clipping settings/input controls. */
+@media (max-height: 480px) {
+  .multiplayer-widget-body {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .multiplayer-widget-content,
+  .multiplayer-widget-thread,
+  .multiplayer-widget-discussions {
+    flex-shrink: 0;
+    overflow: visible;
+  }
+
+  .multiplayer-widget-content > .multiplayer-widget-thread,
+  .multiplayer-widget-thread > .multiplayer-widget-discussions,
+  .multiplayer-widget-discussions > .multiplayer-widget-comments {
+    flex-shrink: 0;
+  }
+
+  .multiplayer-widget-comments {
+    overflow: visible;
+  }
+
+  .multiplayer-widget-composer,
+  .multiplayer-widget-sharing {
+    max-height: none;
+    overflow: visible;
+  }
+}
+
+/* Actions stay in the layout to avoid moving comments on hover. They remain
+   reachable with Tab; focus-within reveals them before keyboard activation.
+   Hide only on devices whose primary input supports precise hover. */
+.multiplayer-comment-actions {
+  opacity: 1;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .multiplayer-comment-actions {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .multiplayer-comment:hover > .multiplayer-comment-actions,
+  .multiplayer-comment:focus-within > .multiplayer-comment-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+/* A touchscreen on a hybrid machine must not need a simulated hover. */
+@media (any-pointer: coarse) {
+  .multiplayer-comment-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}

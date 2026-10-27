@@ -1,0 +1,12 @@
+dist/
+node_modules/
+.multiplayer/
+deploy/relay/data/
+coverage/
+*.db
+*.db-shm
+*.db-wal
+*credential*.json
+.env
+.env.*
+.DS_Store

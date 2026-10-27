@@ -1,0 +1,14 @@
+{
+  "name": "bb-multiplayer-relay-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "better-sqlite3": "12.11.1",
+    "tsx": "4.23.15",
+    "zod": "4.6.5"
+  }
+}
