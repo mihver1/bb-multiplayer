@@ -18,7 +18,7 @@ ENV NODE_ENV=production \
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY deploy/relay/package.json ./package.json
 COPY relay/ ./relay/
-COPY shared/protocol.ts ./shared/protocol.ts
+COPY shared/protocol.ts shared/requests.ts ./shared/
 USER 1000:1000
 EXPOSE 4789
 ENTRYPOINT ["node", "--import", "tsx", "relay/main.ts"]

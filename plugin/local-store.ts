@@ -11,6 +11,8 @@ import {
   type Snapshot,
 } from "../shared/protocol";
 
+import { messageRequestSchema, type MessageRequest } from "../shared/requests";
+
 export type Link = {
   localId: string;
   sharedId: string;
@@ -30,6 +32,7 @@ export class LocalStore {
     `CREATE TABLE cache_threads (id TEXT PRIMARY KEY, data TEXT NOT NULL)`,
     `CREATE TABLE cache_comments (id TEXT PRIMARY KEY, data TEXT NOT NULL)`,
     `ALTER TABLE links ADD COLUMN terminal INTEGER NOT NULL DEFAULT 0`,
+    `CREATE TABLE cache_requests (id TEXT PRIMARY KEY, data TEXT NOT NULL)`,
   ];
   state<T>(key: string, schema: z.ZodType<T>): T | null {
     const row = this.db
@@ -44,7 +47,7 @@ export class LocalStore {
   }
   reset() {
     this.db.exec(
-      "DELETE FROM state; DELETE FROM links; DELETE FROM cache_threads; DELETE FROM cache_comments;",
+      "DELETE FROM state; DELETE FROM links; DELETE FROM cache_threads; DELETE FROM cache_comments; DELETE FROM cache_requests;",
     );
   }
   identity() {
@@ -129,6 +132,28 @@ export class LocalStore {
       .map((r) => commentSchema.parse(JSON.parse(r.data)))
       .filter((c) => c.threadId === threadId)
       .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+  }
+  request(value: MessageRequest) {
+    const previous = this.getRequest(value.id);
+    if (!previous || value.version >= previous.version)
+      this.db
+        .prepare("INSERT OR REPLACE INTO cache_requests VALUES (?, ?)")
+        .run(value.id, JSON.stringify(value));
+  }
+  getRequest(id: string): MessageRequest | null {
+    const row = this.db
+      .prepare("SELECT data FROM cache_requests WHERE id=?")
+      .get(id) as { data: string } | undefined;
+    return row ? messageRequestSchema.parse(JSON.parse(row.data)) : null;
+  }
+  requests(): MessageRequest[] {
+    return (
+      this.db.prepare("SELECT data FROM cache_requests").all() as {
+        data: string;
+      }[]
+    )
+      .map((row) => messageRequestSchema.parse(JSON.parse(row.data)))
+      .sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
   }
   cacheIdentity(value: Identity) {
     this.set("identity", value);

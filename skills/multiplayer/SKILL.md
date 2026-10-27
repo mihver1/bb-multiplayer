@@ -31,6 +31,21 @@ Only one local project/room connection is supported per BB installation.
   be recalled. Presence means the participant's BB is connected, not that a human
   is currently typing.
 
+## v0.2.0 thread-list / owner requests
+
+Version 0.2.0 registers a simplified Multiplayer sidebar replacement and a
+proposal composer on remote read-only thread views. The relay
+upgrade adds a separate owner-request feed. Older relays leave proposals disabled
+without breaking normal sync. Do not redeploy or switch the active user's sidebar
+without telling them; builtin section/tree/environment grouping is not fully
+replicated yet. Native mirror provider activation is still pending; see
+`docs/native-mirror.md`. The projection spike has no host/provider registration.
+
+An owner-review request is not a direct message to an agent. Only the actual thread
+owner can review it; Add to my draft appends untrusted quoted data to the matching
+composer. Never submit it automatically. Request reads are participant-scoped,
+not room-wide. A `drafted` status does not mean the owner sent the prompt.
+
 ## Diagnostics
 
 There is no `bb multiplayer` command and no Multiplayer agent tool in this version.

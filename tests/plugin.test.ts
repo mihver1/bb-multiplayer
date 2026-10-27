@@ -479,6 +479,67 @@ describe("two independent BB installations", () => {
       if (c.parentId) expect(ids.has(c.parentId)).toBe(true);
     expect(alice.harness.inspection.sdk.callsTo("threads.send")).toEqual([]);
   });
+  it("delivers proposed messages to the owner without sending to an agent", async () => {
+    const alice = makeClient("proj_a", "thr_a"),
+      bob = makeClient("proj_b", "thr_b");
+    await rpc(alice, "connect", { url, projectId: "proj_a", token });
+    await rpc(bob, "connect", {
+      url,
+      projectId: "proj_b",
+      inviteCode: (await rpc(alice, "invite")).code,
+      displayName: "Bob",
+    });
+    const { sharedId } = await rpc(alice, "share", {
+      threadId: "thr_a",
+      confirmed: true,
+    });
+    await rpc(bob, "sync");
+    const state = await rpc(bob, "teamThreads");
+    expect(state.projectId).toBe("proj_b");
+    expect(state.threads[0].localId).toBeNull();
+    const request = await rpc(bob, "proposeMessage", {
+      id: randomUUID(),
+      threadId: sharedId,
+      body: "Please test rollback",
+    });
+    await rpc(alice, "sync");
+    const incoming = await rpc(alice, "requestState");
+    expect(incoming.requests[0].localThreadId).toBe("thr_a");
+    await expect(rpc(bob, "requestDraft", { id: request.id })).rejects.toThrow(
+      "owner",
+    );
+    const draft = await rpc(alice, "requestDraft", { id: request.id });
+    expect(draft.threadId).toBe("thr_a");
+    expect(draft.text).toContain("Please test rollback");
+    await rpc(alice, "reviewRequest", {
+      id: request.id,
+      version: request.version,
+      status: "drafted",
+    });
+    await rpc(bob, "sync");
+    expect((await rpc(bob, "requestState")).requests[0].status).toBe("drafted");
+    expect(alice.harness.inspection.sdk.callsTo("threads.send")).toEqual([]);
+    expect(alice.harness.inspection.sdk.callsTo("threads.spawn")).toEqual([]);
+  });
+  it("keeps conversation sync working against a relay without request support", async () => {
+    const alice = makeClient("proj_a", "thr_a"),
+      original = globalThis.fetch;
+    vi.stubGlobal(
+      "fetch",
+      (input: string | URL | Request, init?: RequestInit) =>
+        String(input).includes("/request-events")
+          ? Promise.resolve(
+              new Response(JSON.stringify({ error: "Route not found" }), {
+                status: 404,
+                headers: { "content-type": "application/json" },
+              }),
+            )
+          : original(input, init),
+    );
+    await rpc(alice, "connect", { url, projectId: "proj_a", token });
+    expect((await rpc(alice, "status")).online).toBe(true);
+    expect((await rpc(alice, "requestState")).supported).toBe(false);
+  });
   it("uses only the public plugin SDK", async () => {
     const scan = await experimental_scanPublicSdkOnly(process.cwd(), {
       allow: [
@@ -486,7 +547,7 @@ describe("two independent BB installations", () => {
         /^@testing-library\/react$/,
         /^react(?:-dom)?$/,
         /^@radix-ui\/react-[a-z-]+$/,
-        /^(?:class-variance-authority|clsx|tailwind-merge|better-sqlite3)$/,
+        /^(?:class-variance-authority|clsx|tailwind-merge|better-sqlite3|sonner)$/,
         /^@\/(?:components|lib)\//,
       ],
     });

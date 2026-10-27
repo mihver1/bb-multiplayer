@@ -6,7 +6,31 @@ A working first slice of team collaboration: opt-in live conversation previews,
 contextual comments, replies, resolution, presence and deliberate handoff of
 feedback to the local agent's draft. No remote control of someone else's agent.
 
-## What works
+## New in v0.2.0
+
+This release adds a **Multiplayer thread-list replacement** and **message
+proposals to thread owners**. Use plugin and relay v0.2.0 for the full workflow.
+
+- Connected projects include remote shared rows with the Multiplayer glyph.
+  Local rows use native navigation, menus, draft/status and split controls.
+- A remote row currently opens the plugin-owned **read-only shared conversation**,
+  not a native agent thread. Its proposal composer sends a request to the owner.
+- Owners receive a BB toast and a review banner in the owning local thread:
+  **Add to my draft** or **Dismiss**, never automatic agent submission.
+- The relay must be upgraded for proposals. Older relays keep conversation/comment
+  sync working and show proposal submission as unavailable. Requests use a
+  separate event feed and are visible only to their author and thread owner.
+- The list is a simplified project-grouped replacement; builtin section/tree/
+  environment organization is not yet replicated. Enabling it may select it;
+  **Settings → Appearance → Sidebar** can pin the builtin list instead.
+
+A direct provider-bridge projection experiment is tested but **not registered or
+activated**. Native mirrors need durable import/resume/edit semantics; pretending
+that replayed snapshots are executable threads would duplicate history and blur
+ownership. See [docs/native-mirror.md](docs/native-mirror.md) for the implementation
+boundary and remaining work. No ACP agent has been installed or spawned.
+
+## Collaboration features
 
 - **Multiplayer page:** connect a local project to a team server, see members,
   last-seen presence and shared conversations from other BB installations.
@@ -51,6 +75,21 @@ feedback to the local agent's draft. No remote control of someone else's agent.
   uses the newer `experimental_tab` API when present, otherwise the baseline's
   `threadPanelAction`. A newer `bb` CLI may print a migration warning; do not
   blindly repin types to the CLI version when the running server is older.
+
+Install the pinned release on another BB installation:
+
+```sh
+bb plugin install git:https://github.com/mihver1/bb-multiplayer.git@v0.2.0
+```
+
+If Multiplayer is already installed from a local path or a different tracked
+source, do not remove its stored data to switch versions. Update that source or
+checkout and reload the plugin. Select **Multiplayer threads** in **Settings →
+Appearance → Sidebar** if another list provider is pinned. Join with a new
+invitation so each laptop has its own member identity; do not reuse the owner's
+credential on the second machine to simulate a teammate.
+
+For source development:
 
 ```sh
 npm ci --include=dev
@@ -265,6 +304,10 @@ checked separately; no real team conversation is shared during those checks.
 - `server.ts` — plugin RPC, events, sync service, authorization of local sharing.
 - `app.tsx` — onboarding, team page, floating discussion, feedback-to-draft UI.
 - `components/floating-discussion.tsx` — movable, keyboard-accessible widget chrome.
+- `components/team-thread-list.tsx` — local/team sidebar replacement.
+- `components/message-requests.tsx` — proposal composer, inbox toast and owner review.
+- `shared/requests.ts` — separate request protocol and schemas.
+- `provider/mirror-projection.ts` — unregistered native-timeline feasibility spike.
 - `components/discussion-list.tsx` — grouped roots/replies and resolved branches.
 - `shared/discussions.ts` — deterministic grouping and parent-preserving previews.
 - `lib/discussion-target.ts` — ephemeral thread-scoped message-action targets.

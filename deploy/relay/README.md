@@ -1,5 +1,15 @@
 # Self-hosted playground deployment
 
+## v0.2.0 upgrade
+
+The v0.2.0 relay adds owner message requests (additive SQLite tables and
+`/v1/message-requests`, `/v1/message-request`, `/v1/review-request`,
+`/v1/request-events`). The image includes `shared/requests.ts`. Before deploying,
+back up SQLite consistently and recreate only the relay service. Old clients
+remain compatible because request events do not enter the v1 conversation feed.
+The release image is `bb-multiplayer-relay:0.2.0`; retain the previous image and
+source backup for rollback. Never rerun `init` or replace the existing data directory.
+
 ## Live deployment
 
 - Origin: **https://multiplayer.selfhost.ru**
@@ -51,7 +61,7 @@ as part of deployment verification.
    the room `Multiplayer Playground`.
 3. Invite other members through **Invite teammate**, sharing their one-use codes
    privately. Never share the owner credential.
-4. Thread sharing remains off until explicitly enabled in each thread's panel.
+4. Thread sharing remains off until explicitly enabled in each thread's Team widget.
 
 For example, download to a private, ignored local directory without displaying
 its contents:
@@ -136,6 +146,11 @@ Before and after deployment:
 - `copy.selfhost.ru`: HTTPS 502 **already present before deployment**; untouched.
 - nginx warning about duplicate `dns-b.selfhost.ru` on 80/443 **already present**;
   untouched.
+
+For v0.2.0, the upgrade's baseline, consistent database backup, old source/image
+reference, and verification records live in the private release directory
+`/opt/bb-multiplayer-playground/releases/v0.2.0`. The deployment does not require
+an nginx reload or firewall changes. Preserve backups; they contain private data.
 
 Health/readiness and unauthenticated rejection were checked over public HTTPS
 with certificate verification. Initial immediate request during graceful reload

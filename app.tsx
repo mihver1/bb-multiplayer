@@ -25,6 +25,12 @@ import { registerThreadPanel } from "./lib/register-thread-panel";
 import { FloatingDiscussion } from "./components/floating-discussion";
 import { DiscussionList } from "./components/discussion-list";
 import { groupDiscussions } from "./shared/discussions";
+import { TeamThreadList } from "./components/team-thread-list";
+import {
+  MessageRequestComposer,
+  OwnerRequestBanner,
+  OwnerRequestInbox,
+} from "./components/message-requests";
 import {
   IconAction,
   MessageToDraftGlyph,
@@ -788,6 +794,16 @@ function ThreadDetail({
           ))}
         </section>
       )}
+      {!inline &&
+        data.localId === null &&
+        identity &&
+        data.thread.ownerId !== identity.member.id && (
+          <MessageRequestComposer
+            key={id}
+            sharedId={id}
+            ownerName={author(data.thread.ownerId)}
+          />
+        )}
       <section
         className={inline ? "multiplayer-widget-discussions" : "space-y-3"}
         aria-label="Discussions"
@@ -1309,6 +1325,23 @@ export default definePluginApp((app) => {
     icon: "multiplayer/people",
     path: "team",
     component: TeamPage,
+  });
+  app.slots.experimental_threadList({
+    id: "team-threads",
+    title: "Multiplayer threads",
+    description: "Local and shared team threads grouped by project",
+    component: TeamThreadList,
+  });
+  app.slots.experimental_appOverlay({
+    id: "message-request-inbox",
+    component: OwnerRequestInbox,
+  });
+  app.composer.customize({
+    id: "message-request-review",
+    scopes: ["thread"],
+    banners: [
+      { id: "owner-requests", chrome: "bare", component: OwnerRequestBanner },
+    ],
   });
   // Keep saved legacy tabs usable; all new local interactions use the overlay.
   registerThreadPanel(app, ThreadPanel);

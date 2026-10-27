@@ -21,6 +21,7 @@
     "hooks",
     "shared",
     "plugin",
+    "provider",
     "relay",
     "tests",
     "vitest.config.ts"

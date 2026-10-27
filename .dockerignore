@@ -8,3 +8,4 @@
 !relay/*.ts
 !shared/
 !shared/protocol.ts
+!shared/requests.ts

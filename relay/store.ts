@@ -12,6 +12,13 @@ import {
   type Comment,
 } from "../shared/protocol";
 
+import {
+  messageRequestSchema,
+  type MessageRequest,
+  type NewMessageRequest,
+  type ReviewMessageRequest,
+} from "../shared/requests";
+
 export const digest = (text: string) =>
   createHash("sha256").update(text).digest("hex");
 export const secret = () => randomBytes(32).toString("base64url");
@@ -56,6 +63,12 @@ export class RelayStore {
       CREATE INDEX IF NOT EXISTS events_room ON events(roomId, seq);
       CREATE INDEX IF NOT EXISTS threads_room ON threads(roomId, id);
       CREATE INDEX IF NOT EXISTS comments_thread ON comments(roomId, threadId, id);
+      CREATE TABLE IF NOT EXISTS message_requests (
+        id TEXT PRIMARY KEY, roomId TEXT NOT NULL REFERENCES rooms(id), threadId TEXT NOT NULL REFERENCES threads(id),
+        authorId TEXT NOT NULL REFERENCES members(id), ownerId TEXT NOT NULL REFERENCES members(id), data TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS request_events (seq INTEGER PRIMARY KEY AUTOINCREMENT, requestId TEXT NOT NULL REFERENCES message_requests(id));
+      CREATE INDEX IF NOT EXISTS requests_participants ON message_requests(roomId, ownerId, authorId);
     `);
   }
   private event(roomId: string, kind: string, id: string) {
@@ -333,6 +346,110 @@ export class RelayStore {
       this.event(actor.roomId, "comment", id);
       return next;
     })();
+  }
+  request(actor: Actor, id: string): MessageRequest {
+    const row = this.db
+      .prepare(
+        "SELECT data FROM message_requests WHERE id=? AND roomId=? AND (ownerId=? OR authorId=?)",
+      )
+      .get(id, actor.roomId, actor.id, actor.id) as
+      { data: string } | undefined;
+    if (!row) return fail(404, "Request not found");
+    return messageRequestSchema.parse(JSON.parse(row.data));
+  }
+  createRequest(actor: Actor, input: NewMessageRequest): MessageRequest {
+    return this.db.transaction(() => {
+      const thread = this.thread(actor, input.threadId);
+      if (thread.ownerId === actor.id)
+        fail(422, "Use your own local thread composer");
+      const previous = this.db
+        .prepare("SELECT data FROM message_requests WHERE id=?")
+        .get(input.id) as { data: string } | undefined;
+      if (previous) {
+        const request = messageRequestSchema.parse(JSON.parse(previous.data));
+        if (
+          request.authorId !== actor.id ||
+          request.threadId !== input.threadId ||
+          request.body !== input.body
+        )
+          fail(409, "Request ID already in use");
+        return request;
+      }
+      const owner = this.db
+        .prepare("SELECT id FROM members WHERE id=? AND roomId=? AND revoked=0")
+        .get(thread.ownerId, actor.roomId);
+      if (!owner || thread.status === "deleted" || thread.status === "archived")
+        fail(409, "Thread owner or thread unavailable");
+      const request: MessageRequest = {
+        ...input,
+        authorId: actor.id,
+        ownerId: thread.ownerId,
+        status: "pending",
+        version: 1,
+        createdAt: this.now(),
+        updatedAt: this.now(),
+      };
+      this.db
+        .prepare("INSERT INTO message_requests VALUES (?, ?, ?, ?, ?, ?)")
+        .run(
+          request.id,
+          actor.roomId,
+          request.threadId,
+          actor.id,
+          thread.ownerId,
+          JSON.stringify(request),
+        );
+      this.db
+        .prepare("INSERT INTO request_events(requestId) VALUES (?)")
+        .run(request.id);
+      return request;
+    })();
+  }
+  reviewRequest(actor: Actor, input: ReviewMessageRequest): MessageRequest {
+    return this.db.transaction(() => {
+      const request = this.request(actor, input.id);
+      if (request.ownerId !== actor.id)
+        fail(403, "Only the thread owner can review this request");
+      if (request.version !== input.version || request.status !== "pending") {
+        if (
+          request.version === input.version + 1 &&
+          request.status === input.status
+        )
+          return request;
+        fail(409, "Request changed; reload before reviewing");
+      }
+      const next = {
+        ...request,
+        status: input.status,
+        version: request.version + 1,
+        updatedAt: this.now(),
+      };
+      this.db
+        .prepare("UPDATE message_requests SET data=? WHERE id=?")
+        .run(JSON.stringify(next), input.id);
+      this.db
+        .prepare("INSERT INTO request_events(requestId) VALUES (?)")
+        .run(input.id);
+      return next;
+    })();
+  }
+  requestEvents(actor: Actor, after: number) {
+    const rows = this.db
+      .prepare(
+        `SELECT e.seq, r.data FROM request_events e JOIN message_requests r ON r.id=e.requestId
+      WHERE e.seq>? AND r.roomId=? AND (r.ownerId=? OR r.authorId=?) ORDER BY e.seq LIMIT 50`,
+      )
+      .all(after, actor.roomId, actor.id, actor.id) as {
+      seq: number;
+      data: string;
+    }[];
+    return {
+      cursor: rows.at(-1)?.seq ?? after,
+      events: rows.map((row) => ({
+        seq: row.seq,
+        request: messageRequestSchema.parse(JSON.parse(row.data)),
+      })),
+    };
   }
   events(actor: Actor, after: number) {
     const events = this.db

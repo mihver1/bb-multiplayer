@@ -139,7 +139,10 @@ describe("floating team discussion", () => {
   it("registers an app overlay, not a composer banner, and does not duplicate the conversation", async () => {
     const { app, registration, slot } = await setup();
     expect(registration.id).toBe("team-discussion");
-    expect(app.composerCustomizations[0].banners).toBeUndefined();
+    expect(
+      app.composerCustomizations.find((c) => c.id === "team-discussion")
+        ?.banners,
+    ).toBeUndefined();
     const toggle = await slot.findByRole("button", { name: /Team discussion/ });
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     expect(slot.inspection.rpcCalls.some((c) => c.method === "thread")).toBe(

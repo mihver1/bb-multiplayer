@@ -13,6 +13,10 @@ import {
   ProtocolError,
 } from "../shared/protocol";
 import { RelayStore } from "./store";
+import {
+  newMessageRequestSchema,
+  reviewMessageRequestSchema,
+} from "../shared/requests";
 
 const LIMIT = 8 * 1024 * 1024;
 async function body(req: IncomingMessage): Promise<unknown> {
@@ -84,6 +88,25 @@ export function createRelayServer(store: RelayStore) {
       const after = () =>
         z.union([id, z.literal("")]).parse(url.searchParams.get("after") ?? "");
       switch (route) {
+        case "GET /v1/request-events": {
+          const after = z.coerce
+            .number()
+            .int()
+            .min(0)
+            .max(Number.MAX_SAFE_INTEGER)
+            .parse(url.searchParams.get("after") ?? "0");
+          return send(res, 200, store.requestEvents(actor, after));
+        }
+        case "GET /v1/message-request":
+          return send(res, 200, store.request(actor, queryId()));
+        case "POST /v1/message-requests": {
+          const input = newMessageRequestSchema.parse(await body(req));
+          return send(res, 200, store.createRequest(freshActor(), input));
+        }
+        case "POST /v1/review-request": {
+          const input = reviewMessageRequestSchema.parse(await body(req));
+          return send(res, 200, store.reviewRequest(freshActor(), input));
+        }
         case "GET /v1/me":
           return send(res, 200, store.identity(actor));
         case "POST /v1/invites":
