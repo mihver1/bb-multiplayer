@@ -20,15 +20,51 @@ import type {
 import type { rpcContract } from "../server";
 import { useTeamQuery } from "../hooks/use-team-query";
 import { Icon } from "./ui/icon";
+import { IconAction } from "./icon-action";
 import { cn } from "../lib/utils";
+
+/** Keep each family's rows together, preserving the supplied sibling order. */
+function nestThreadRows(threads: PluginSidebarThread[]) {
+  const ids = new Set(threads.map((thread) => thread.id));
+  const children = new Map<string | null, PluginSidebarThread[]>();
+  for (const thread of threads) {
+    const parentId =
+      thread.parentThreadId && ids.has(thread.parentThreadId)
+        ? thread.parentThreadId
+        : null;
+    const siblings = children.get(parentId) ?? [];
+    siblings.push(thread);
+    children.set(parentId, siblings);
+  }
+  const rows: { thread: PluginSidebarThread; depth: number }[] = [];
+  const visited = new Set<string>();
+  function appendTree(thread: PluginSidebarThread) {
+    const stack = [{ thread, depth: 0 }];
+    while (stack.length) {
+      const row = stack.pop()!;
+      if (visited.has(row.thread.id)) continue;
+      visited.add(row.thread.id);
+      rows.push(row);
+      const descendants = children.get(row.thread.id) ?? [];
+      for (let i = descendants.length - 1; i >= 0; i--)
+        stack.push({ thread: descendants[i], depth: row.depth + 1 });
+    }
+  }
+  for (const root of children.get(null) ?? []) appendTree(root);
+  // Missing/filtered parents become roots; malformed cycles must not hide rows.
+  for (const thread of threads) if (!visited.has(thread.id)) appendTree(thread);
+  return rows;
+}
 
 function LocalRow({
   thread,
+  depth,
   active,
   shared,
   onNavigate,
 }: {
   thread: PluginSidebarThread;
+  depth: number;
   active: boolean;
   shared: boolean;
   onNavigate: () => void;
@@ -51,6 +87,8 @@ function LocalRow({
           "group flex items-center rounded-md px-2 hover:bg-muted",
           active && "bg-muted",
         )}
+        // Bound the visual indent so deeply nested threads still have room for a title.
+        style={{ paddingInlineStart: `${0.5 + Math.min(depth, 6)}rem` }}
       >
         <a
           href={thread.href}
@@ -174,13 +212,13 @@ export function TeamThreadList(props: PluginThreadListProps) {
   let remaining = limit;
   return (
     <div
-      className="h-full overflow-y-auto px-2 pb-4"
+      className="h-full overflow-y-auto bg-sidebar px-2 pb-4"
       aria-label="Multiplayer thread list"
     >
-      <div className="sticky top-0 z-10 space-y-2 bg-background py-2">
+      <div className="sticky top-0 z-10 flex items-center gap-2 bg-sidebar py-2">
         <input
           aria-label="Search threads"
-          className="h-8 w-full rounded-md border border-border bg-background px-2 text-sm"
+          className="h-8 min-w-0 flex-1 rounded-md border border-border bg-transparent px-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           placeholder="Search threads"
           value={query}
           onChange={(e) => {
@@ -188,15 +226,34 @@ export function TeamThreadList(props: PluginThreadListProps) {
             setLimit(100);
           }}
         />
-        <button
-          className="text-xs text-muted-foreground"
+        <IconAction
+          label={archived ? "Show active threads" : "Show archived threads"}
+          className="size-8"
           onClick={() => {
             setArchived((v) => !v);
             setLimit(100);
           }}
         >
-          {archived ? "Show active threads" : "Show archived threads"}
-        </button>
+          <span aria-hidden="true" className="relative size-4">
+            <Icon name="Archive" className="size-4" />
+            {archived && (
+              <svg
+                data-glyph="archive-off"
+                focusable="false"
+                viewBox="0 0 24 24"
+                className="absolute inset-0 size-4"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.7"
+                strokeLinecap="round"
+              >
+                {/* Separate the slash from the archive's strokes. */}
+                <path d="m3 3 18 18" stroke="var(--sidebar)" strokeWidth="5" />
+                <path d="m3 3 18 18" />
+              </svg>
+            )}
+          </span>
+        </IconAction>
       </div>
       {native.status === "loading" && (
         <p role="status" className="p-2 text-xs">
@@ -223,7 +280,7 @@ export function TeamThreadList(props: PluginThreadListProps) {
         if (!locals.length && !remotes.length && needle) return null;
         const projectRows = collapsed.has(project.id)
           ? []
-          : locals.slice(0, remaining);
+          : nestThreadRows(locals).slice(0, remaining);
         remaining -= projectRows.length;
         const remoteRows = collapsed.has(project.id)
           ? []
@@ -233,7 +290,8 @@ export function TeamThreadList(props: PluginThreadListProps) {
           <section key={project.id} className="mt-2" aria-label={project.name}>
             <div className="flex items-center gap-1 px-2">
               <button
-                className="min-w-0 flex-1 truncate py-2 text-left text-xs font-semibold text-muted-foreground"
+                type="button"
+                className="flex min-w-0 flex-1 items-center gap-1.5 rounded py-2 text-left text-xs font-semibold text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 aria-expanded={!collapsed.has(project.id)}
                 onClick={() =>
                   setCollapsed((old) => {
@@ -245,8 +303,17 @@ export function TeamThreadList(props: PluginThreadListProps) {
                   })
                 }
               >
-                {project.name}
-                {team?.projectId === project.id ? " · Team" : ""}
+                <Icon
+                  name={
+                    collapsed.has(project.id) ? "ChevronRight" : "ChevronDown"
+                  }
+                  aria-hidden="true"
+                  className="size-3.5 shrink-0"
+                />
+                <span className="min-w-0 truncate">
+                  {project.name}
+                  {team?.projectId === project.id ? " · Team" : ""}
+                </span>
               </button>
               <button
                 aria-label={`New thread in ${project.name}`}
@@ -264,10 +331,11 @@ export function TeamThreadList(props: PluginThreadListProps) {
             </div>
             {!collapsed.has(project.id) && (
               <>
-                {projectRows.map((thread) => (
+                {projectRows.map(({ thread, depth }) => (
                   <LocalRow
                     key={thread.id}
                     thread={thread}
+                    depth={depth}
                     active={thread.id === props.activeThreadId}
                     shared={sharedLocal.has(thread.id)}
                     onNavigate={props.onNavigate}

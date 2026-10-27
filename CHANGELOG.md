@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.2.1
+
+- Replace the archive text selector with compact archive/archive-off glyphs beside
+  search, keeping accessible labels and hover/focus tooltips.
+- Use a consistent sidebar background for the thread list and search toolbar.
+- Show expanded/collapsed chevrons in project headers.
+- Group local child threads beneath their parents with depth-based indentation,
+  preserving sibling ordering, search, archive filtering and pagination.
+- Keep children visible when their parent is unavailable and guard against cyclic
+  parent links and excessive indentation.
+- No relay changes; compatible with relay v0.2.0.
+
 ## v0.2.0
 
 - Add a project-grouped Multiplayer thread list with local/shared glyphs, native

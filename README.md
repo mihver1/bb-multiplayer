@@ -6,10 +6,19 @@ A working first slice of team collaboration: opt-in live conversation previews,
 contextual comments, replies, resolution, presence and deliberate handoff of
 feedback to the local agent's draft. No remote control of someone else's agent.
 
-## New in v0.2.0
+## New in v0.2.1
 
-This release adds a **Multiplayer thread-list replacement** and **message
-proposals to thread owners**. Use plugin and relay v0.2.0 for the full workflow.
+- Compact archive/archive-off glyphs beside search, with hover/focus tooltips.
+- A consistent background across the thread list and search toolbar.
+- Project-header chevrons that indicate expanded/collapsed state.
+- Local child threads grouped beneath their parents with nested indentation.
+
+This is a UI-only update; relay v0.2.0 remains compatible.
+
+## Introduced in v0.2.0
+
+The **Multiplayer thread-list replacement** and **message proposals to thread
+owners** require plugin and relay v0.2.0 or later for the full workflow.
 
 - Connected projects include remote shared rows with the Multiplayer glyph.
   Local rows use native navigation, menus, draft/status and split controls.
@@ -20,7 +29,7 @@ proposals to thread owners**. Use plugin and relay v0.2.0 for the full workflow.
 - The relay must be upgraded for proposals. Older relays keep conversation/comment
   sync working and show proposal submission as unavailable. Requests use a
   separate event feed and are visible only to their author and thread owner.
-- The list is a simplified project-grouped replacement; builtin section/tree/
+- The list groups local parent/child threads under projects; builtin section and
   environment organization is not yet replicated. Enabling it may select it;
   **Settings → Appearance → Sidebar** can pin the builtin list instead.
 
@@ -79,7 +88,7 @@ boundary and remaining work. No ACP agent has been installed or spawned.
 Install the pinned release on another BB installation:
 
 ```sh
-bb plugin install git:https://github.com/mihver1/bb-multiplayer.git@v0.2.0
+bb plugin install git:https://github.com/mihver1/bb-multiplayer.git@v0.2.1
 ```
 
 If Multiplayer is already installed from a local path or a different tracked
