@@ -12,6 +12,8 @@ discusses explicitly shared conversations.
 - Add selected feedback to **your own agent's draft** — never auto-execute remote comments.
 - A room per local project, with multiple simultaneous connections in one BB.
   Use one relay with isolated rooms or separate relays; switch projects on the page.
+- Create a new project's room from the UI using an existing owner connection;
+  no SSH or token copying after initial setup (requires an updated relay).
 - One-use invitations, individual credentials and revocation.
 - Durable sync recovery after disconnects and restarts.
 

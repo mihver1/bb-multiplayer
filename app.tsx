@@ -26,6 +26,7 @@ import { FloatingDiscussion } from "./components/floating-discussion";
 import { DiscussionList } from "./components/discussion-list";
 import { groupDiscussions } from "./shared/discussions";
 import { TeamThreadList } from "./components/team-thread-list";
+import { CreateRoomForm } from "./components/create-room";
 import {
   OpenNativeMirror,
   NativeMirrorBanner,
@@ -140,12 +141,21 @@ function Connect({
   const rpc = useRpc<typeof rpcContract>(),
     action = useAction();
   const [url, setUrl] = useState("http://127.0.0.1:4789");
-  const [mode, setMode] = useState<"invite" | "owner">("invite");
+  const [mode, setMode] = useState<"invite" | "owner" | "create">("invite");
+  const loadCreation = useCallback(
+    () => rpc.call("roomCreationOptions", { projectId }),
+    [rpc, projectId],
+  );
+  const creation = useLoad(loadCreation);
+  const [creationBusy, setCreationBusy] = useState(false);
+  const connectionBusy = action.busy || creationBusy;
+  const creating = mode === "create" || Boolean(creation.data?.pending);
   const [credential, setCredential] = useState(""),
     [displayName, setDisplayName] = useState("");
   function submit(event: FormEvent) {
     event.preventDefault();
     void action.run(async () => {
+      if (creating) return;
       await rpc.call("connect", {
         url,
         projectId,
@@ -171,106 +181,135 @@ function Connect({
           shared until you explicitly enable a thread.
         </p>
       </div>
-      <form
-        onSubmit={submit}
-        className="space-y-4 rounded-xl border border-border bg-card p-5"
-      >
-        <label className="block space-y-1 text-sm">
-          <span>Server URL</span>
-          <Input
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            required
-            type="url"
-          />
-        </label>
-        <label className="block space-y-1 text-sm">
-          <span>Local project</span>
-          <select
-            className="h-9 w-full rounded-md border border-border bg-background px-3"
-            value={projectId}
-            disabled
-            required
-          >
-            {status.projects
-              .filter((p) => p.id === projectId)
-              .map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-          </select>
-        </label>
-        <div className="flex gap-2">
-          <Button
-            type="button"
-            size="sm"
-            variant={mode === "invite" ? "default" : "outline"}
-            onClick={() => {
-              setMode("invite");
-              setCredential("");
-            }}
-          >
-            Join with invitation
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant={mode === "owner" ? "default" : "outline"}
-            onClick={() => {
-              setMode("owner");
-              setCredential("");
-            }}
-          >
-            Use member credential
-          </Button>
-        </div>
-        {mode === "invite" && (
+      <div className="flex flex-wrap gap-2" aria-label="Connection method">
+        <Button
+          type="button"
+          size="sm"
+          variant={creating ? "default" : "outline"}
+          disabled={connectionBusy}
+          onClick={() => {
+            setMode("create");
+            setCredential("");
+          }}
+        >
+          Create new room
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant={!creating && mode === "invite" ? "default" : "outline"}
+          disabled={connectionBusy || Boolean(creation.data?.pending)}
+          onClick={() => {
+            setMode("invite");
+            setCredential("");
+          }}
+        >
+          Join with invitation
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant={!creating && mode === "owner" ? "default" : "outline"}
+          disabled={connectionBusy || Boolean(creation.data?.pending)}
+          onClick={() => {
+            setMode("owner");
+            setCredential("");
+          }}
+        >
+          Use member credential
+        </Button>
+      </div>
+      {creating ? (
+        <CreateRoomForm
+          projectId={projectId}
+          projectName={
+            status.projects.find((p) => p.id === projectId)?.name ?? ""
+          }
+          options={creation.data}
+          error={creation.error}
+          onDone={refresh}
+          onAttempt={creation.refresh}
+          onBusy={setCreationBusy}
+        />
+      ) : (
+        <form
+          onSubmit={submit}
+          className="space-y-4 rounded-xl border border-border bg-card p-5"
+        >
           <label className="block space-y-1 text-sm">
-            <span>Your name</span>
+            <span>Server URL</span>
             <Input
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
-              maxLength={100}
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              required
+              type="url"
+            />
+          </label>
+          <label className="block space-y-1 text-sm">
+            <span>Local project</span>
+            <select
+              className="h-9 w-full rounded-md border border-border bg-background px-3"
+              value={projectId}
+              disabled
+              required
+            >
+              {status.projects
+                .filter((p) => p.id === projectId)
+                .map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+            </select>
+          </label>
+          {mode === "invite" && (
+            <label className="block space-y-1 text-sm">
+              <span>Your name</span>
+              <Input
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                maxLength={100}
+                required
+              />
+            </label>
+          )}
+          <label className="block space-y-1 text-sm">
+            <span>
+              {mode === "invite" ? "Invitation code" : "Member credential"}
+            </span>
+            <Input
+              type="password"
+              autoComplete="off"
+              value={credential}
+              onChange={(e) => setCredential(e.target.value)}
+              maxLength={200}
               required
             />
           </label>
-        )}
-        <label className="block space-y-1 text-sm">
-          <span>
-            {mode === "invite" ? "Invitation code" : "Member credential"}
-          </span>
-          <Input
-            type="password"
-            autoComplete="off"
-            value={credential}
-            onChange={(e) => setCredential(e.target.value)}
-            maxLength={200}
-            required
-          />
-        </label>
-        <p className="text-xs text-muted-foreground">
-          {mode === "owner" && (
-            <>
-              Paste only the <code>token</code> value, not the entire JSON
-              file.{" "}
-            </>
-          )}
-          The credential is stored in BB's server-side secret settings, never in
-          this page's local storage. Use HTTPS for a remote server.
-        </p>
-        {action.error && <Notice error>{action.error}</Notice>}
-        <Button
-          type="submit"
-          disabled={action.busy || !projectId || !credential}
-        >
-          Connect project
-        </Button>
-      </form>
+          <p className="text-xs text-muted-foreground">
+            {mode === "owner" && (
+              <>
+                Paste only the <code>token</code> value, not the entire JSON
+                file.{" "}
+              </>
+            )}
+            The credential is stored in BB's server-side secret settings, never
+            in this page's local storage. Use HTTPS for a remote server.
+          </p>
+          {action.error && <Notice error>{action.error}</Notice>}
+          <Button
+            type="submit"
+            disabled={action.busy || !projectId || !credential}
+          >
+            Connect project
+          </Button>
+        </form>
+      )}
       <Notice>
-        Starting a new team? Use the relay's create-room command (or init for a
-        new server), then the owner's private credential file. Each local
-        project connects independently; other projects stay connected.
+        Already own a room? Create another here using that saved owner
+        connection — no SSH or token copying. A fresh relay needs its initial
+        owner setup once. Each local project connects independently; other
+        projects stay connected.
       </Notice>
     </div>
   );

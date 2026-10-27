@@ -114,6 +114,201 @@ describe("BB UI contracts", () => {
     expect(slot.inspection.navigateCalls).toEqual([]);
     slot.lifecycle.unmount();
   });
+  it("creates a new room from the UI using the saved owner connection without exposing credentials", async () => {
+    const app = await loadPluginApp(() => import("../app"));
+    const base = status();
+    let connected = false;
+    const slot = renderSlot(
+      app.navPanels[0],
+      { subPath: "project/proj_b" },
+      {
+        rpc: {
+          status: () => ({
+            ...base,
+            projectId: "proj_b",
+            projects: [...base.projects, { id: "proj_b", name: "Billing" }],
+            connection: connected
+              ? { ...base.connection!, projectId: "proj_b" }
+              : null,
+            identity: connected
+              ? {
+                  ...base.identity!,
+                  room: { id: roomId, name: "Billing team" },
+                }
+              : null,
+          }),
+          roomCreationOptions: () => ({
+            pending: null,
+            sources: [
+              {
+                projectId: "proj_a",
+                url: "https://relay.example",
+                roomName: "Existing team",
+                ownerName: "Alice",
+              },
+            ],
+          }),
+          createRoom: () => {
+            connected = true;
+            return { ok: true };
+          },
+        },
+      },
+    );
+    fireEvent.click(await slot.findByText("Create new room"));
+    const roomName = await slot.findByLabelText("Room name");
+    expect((roomName as HTMLInputElement).value).toBe("Billing");
+    expect(slot.queryByLabelText("Invitation code")).toBeNull();
+    expect(slot.queryByLabelText("Member credential")).toBeNull();
+    fireEvent.change(roomName, { target: { value: "Billing team" } });
+    fireEvent.click(slot.getByText("Create room and connect"));
+    await slot.findByText("Billing team");
+    expect(
+      slot.inspection.rpcCalls.find((c) => c.method === "createRoom")?.input,
+    ).toEqual({
+      projectId: "proj_b",
+      sourceProjectId: "proj_a",
+      name: "Billing team",
+    });
+    expect(
+      slot.inspection.rpcCalls.some((c) =>
+        ["connect", "share", "disconnect"].includes(c.method),
+      ),
+    ).toBe(false);
+  });
+
+  it("does not submit duplicate creation requests or switch credential mode while creating", async () => {
+    const app = await loadPluginApp(() => import("../app"));
+    let finish!: (value: { ok: boolean }) => void;
+    const slot = renderSlot(
+      app.navPanels[0],
+      { subPath: "" },
+      {
+        rpc: {
+          status: () => ({ ...status(), connection: null, identity: null }),
+          roomCreationOptions: () => ({
+            pending: null,
+            sources: [
+              {
+                projectId: "proj_source",
+                url: "https://relay.example",
+                roomName: "Original",
+                ownerName: "Alice",
+              },
+            ],
+          }),
+          createRoom: () =>
+            new Promise((resolve) => {
+              finish = resolve;
+            }),
+        },
+      },
+    );
+    fireEvent.click(await slot.findByText("Create new room"));
+    const form = await slot.findByRole("form", {
+      name: "Create a project room",
+    });
+    fireEvent.submit(form);
+    fireEvent.submit(form);
+    await waitFor(() =>
+      expect(
+        slot.inspection.rpcCalls.filter((c) => c.method === "createRoom"),
+      ).toHaveLength(1),
+    );
+    expect(
+      (slot.getByText("Use member credential") as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(
+      (slot.getByLabelText("Room name") as HTMLInputElement).disabled,
+    ).toBe(true);
+    await act(async () => finish({ ok: true }));
+  });
+
+  it("recovers a pending creation after opening the page and preserves the original input", async () => {
+    const app = await loadPluginApp(() => import("../app"));
+    const base = status();
+    const pending = {
+      requestId: threadId,
+      sourceProjectId: "proj_a",
+      sourceMemberId: memberId,
+      sourceRoomId: roomId,
+      url: "https://relay.example",
+      name: "Saved creation",
+    };
+    const slot = renderSlot(
+      app.navPanels[0],
+      { subPath: "project/proj_b" },
+      {
+        rpc: {
+          status: () => ({
+            ...base,
+            connection: null,
+            identity: null,
+            projects: [...base.projects, { id: "proj_b", name: "Billing" }],
+          }),
+          roomCreationOptions: () => ({
+            pending,
+            sources: [
+              {
+                projectId: "proj_a",
+                url: pending.url,
+                roomName: "Original",
+                ownerName: "Alice",
+              },
+            ],
+          }),
+          createRoom: () => {
+            throw new Error("Network unavailable");
+          },
+        },
+      },
+    );
+    const retry = await slot.findByText("Retry room creation");
+    expect(
+      (slot.getByLabelText("Room name") as HTMLInputElement).disabled,
+    ).toBe(true);
+    expect((slot.getByLabelText("Room name") as HTMLInputElement).value).toBe(
+      "Saved creation",
+    );
+    expect(
+      (slot.getByText("Use member credential") as HTMLButtonElement).disabled,
+    ).toBe(true);
+    fireEvent.click(retry);
+    await slot.findByText("Network unavailable");
+    expect(
+      slot.inspection.rpcCalls.find((c) => c.method === "createRoom")?.input,
+    ).toEqual({
+      projectId: "proj_b",
+      sourceProjectId: "proj_a",
+      name: "Saved creation",
+    });
+  });
+
+  it("explains that a room owner connection is required instead of offering anonymous creation", async () => {
+    const app = await loadPluginApp(() => import("../app"));
+    const slot = renderSlot(
+      app.navPanels[0],
+      { subPath: "" },
+      {
+        rpc: {
+          status: () => ({
+            ...status(),
+            connection: null,
+            identity: null,
+            connections: [],
+          }),
+          roomCreationOptions: () => ({ pending: null, sources: [] }),
+        },
+      },
+    );
+    fireEvent.click(await slot.findByText("Create new room"));
+    await slot.findByText(/Connect as a room owner first/);
+    expect(slot.queryByText("Create room and connect")).toBeNull();
+    expect(
+      slot.inspection.rpcCalls.some((c) => c.method === "createRoom"),
+    ).toBe(false);
+  });
+
   it("switches project rooms and scopes every administrative action to the selection", async () => {
     const app = await loadPluginApp(() => import("../app"));
     const base = status();

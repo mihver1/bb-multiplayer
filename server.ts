@@ -1,4 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
+import { randomBytes, randomUUID } from "node:crypto";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import {
@@ -20,6 +21,8 @@ import {
 } from "./shared/protocol";
 import { RelayClient } from "./plugin/client";
 import { LocalStore } from "./plugin/local-store";
+import { pendingRoomSchema } from "./plugin/room-creation";
+import { createdRoomSchema } from "./shared/rooms";
 import { capture, hashText } from "./plugin/snapshot";
 import { commentPreview } from "./shared/discussions";
 import {
@@ -146,6 +149,24 @@ export const rpcContract = defineRpcContract({
   reviewRequest: {
     input: reviewMessageRequestSchema.extend({ projectId: id.optional() }),
     output: messageRequestSchema,
+  },
+  roomCreationOptions: {
+    input: projectScope,
+    output: z.object({
+      sources: z.array(
+        z.object({
+          projectId: id,
+          url: z.string(),
+          roomName: name,
+          ownerName: name,
+        }),
+      ),
+      pending: pendingRoomSchema.nullable(),
+    }),
+  },
+  createRoom: {
+    input: z.object({ projectId: id, sourceProjectId: id, name }).strict(),
+    output: z.object({ ok: z.boolean() }),
   },
   connect: {
     input: z
@@ -815,6 +836,138 @@ export default function plugin(bb: BbPluginApi) {
         changed();
         return result;
       }),
+    roomCreationOptions: async ({ projectId }) => {
+      await ready();
+      return {
+        sources: connections().flatMap((conn) => {
+          const identity = storeFor(conn.projectId).identity();
+          return identity?.member.role === "owner" && !identity.member.revoked
+            ? [
+                {
+                  projectId: conn.projectId,
+                  url: conn.url,
+                  roomName: identity.room.name,
+                  ownerName: identity.member.name,
+                },
+              ]
+            : [];
+        }),
+        pending: storeFor(projectId).state("pendingRoom", pendingRoomSchema),
+      };
+    },
+    createRoom: (input) =>
+      serial(async () => {
+        const { projectId, sourceProjectId } = input,
+          store = storeFor(projectId);
+        // A retried RPC after successful attachment must not create another room.
+        if (connection(projectId)) {
+          const receipt = store.state("createdRoom", pendingRoomSchema);
+          if (
+            receipt?.sourceProjectId === sourceProjectId &&
+            receipt.name === input.name
+          )
+            return { ok: true };
+          throw new Error(
+            "Disconnect this project before connecting another room",
+          );
+        }
+        await bb.sdk.projects.get({ projectId });
+        const source = connection(sourceProjectId);
+        if (!source) throw new Error("Connect as a room owner first");
+        let pending = store.state("pendingRoom", pendingRoomSchema);
+        if (
+          pending &&
+          (pending.sourceProjectId !== sourceProjectId ||
+            pending.name !== input.name ||
+            pending.url !== source.url ||
+            pending.sourceMemberId !== source.memberId ||
+            pending.sourceRoomId !== source.roomId)
+        )
+          throw new Error(
+            "A room creation is pending for this project. Retry the original name and owner connection.",
+          );
+        const remote = await client(sourceProjectId);
+        const health = await remote.checkHealth();
+        if (health.capabilities?.roomCreation !== true)
+          throw new Error(
+            "This relay does not support creating rooms from the UI. Upgrade the relay first; existing connections are unchanged.",
+          );
+        // Revalidate identity on the relay, not the cached role used for UI hints.
+        await heartbeat(sourceProjectId, remote);
+        if (storeFor(sourceProjectId).identity()?.member.role !== "owner")
+          throw new Error("Only a room owner can create a new room");
+        let token = parseCredentials((await settings.get()).credentials)[
+          projectId
+        ];
+        const firstAttempt = !pending;
+        if (!pending) {
+          token = randomBytes(32).toString("base64url");
+          // Persist the new token before any room mutation; never put it in SQL/RPC.
+          await saveCredential(projectId, token);
+          pending = {
+            requestId: randomUUID(),
+            sourceProjectId,
+            sourceMemberId: source.memberId,
+            sourceRoomId: source.roomId,
+            url: source.url,
+            name: input.name,
+          };
+          store.set("pendingRoom", pending);
+          changed();
+        }
+        if (!token)
+          throw new Error(
+            "Pending room credential is missing. Restore the project's secret settings before retrying.",
+          );
+        let created;
+        try {
+          created = await remote.call("rooms", createdRoomSchema, {
+            requestId: pending.requestId,
+            name: pending.name,
+            tokenHash: hashText(token),
+          });
+        } catch (cause) {
+          // A definite rejection of the very first request cannot have created a
+          // room. Do not strand the project at the room/rate cap. After any lost
+          // response, however, keep the original token and request for recovery.
+          if (
+            firstAttempt &&
+            cause instanceof ProtocolError &&
+            [401, 403, 404, 409, 413, 415, 422, 429].includes(cause.status)
+          ) {
+            db.prepare(
+              "DELETE FROM project_state WHERE projectId=? AND key='pendingRoom'",
+            ).run(projectId);
+            try {
+              await saveCredential(projectId, null);
+            } finally {
+              changed();
+            }
+          }
+          throw cause;
+        }
+        const identity = await new RelayClient(
+          source.url,
+          token,
+          lifetime.signal,
+        ).call("me", identitySchema);
+        if (
+          identity.room.id !== created.roomId ||
+          identity.member.id !== created.memberId ||
+          identity.member.role !== "owner"
+        )
+          throw new Error("Created room identity does not match this request");
+        db.transaction(() => {
+          store.reset();
+          store.set("connection", { url: source.url, projectId, ...created });
+          store.set("createdRoom", pending);
+          store.cacheIdentity(identity);
+        })();
+        runtime.delete(projectId);
+        await safeSync(projectId);
+        changed();
+        return { ok: true };
+      }),
     connect: (input) =>
       serial(async () => {
         const projectId = input.projectId,
@@ -822,6 +975,10 @@ export default function plugin(bb: BbPluginApi) {
         if (connection(projectId))
           throw new Error(
             "Disconnect this project before connecting another account",
+          );
+        if (store.state("pendingRoom", pendingRoomSchema))
+          throw new Error(
+            "Finish the pending room creation before connecting this project",
           );
         const url = serverUrl(input.url);
         await bb.sdk.projects.get({ projectId: input.projectId });
@@ -880,6 +1037,23 @@ export default function plugin(bb: BbPluginApi) {
     disconnect: (input) =>
       serial(async () => {
         const projectId = selectProject(input?.projectId);
+        const pendingTargets = db
+          .prepare("SELECT value FROM project_state WHERE key='pendingRoom'")
+          .all() as { value: string }[];
+        if (
+          pendingTargets.some(
+            (row) =>
+              pendingRoomSchema.parse(JSON.parse(row.value)).sourceProjectId ===
+              projectId,
+          )
+        )
+          throw new Error(
+            "Finish pending room creations that use this owner connection before disconnecting it",
+          );
+        if (storeFor(projectId).state("pendingRoom", pendingRoomSchema))
+          throw new Error(
+            "Finish the pending room creation before disconnecting this project",
+          );
         await native.disconnect(projectId);
         // Stop publication even if the secret store is temporarily unavailable.
         storeFor(projectId).reset();

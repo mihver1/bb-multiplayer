@@ -6,7 +6,13 @@ A working first slice of team collaboration: opt-in live conversation previews,
 contextual comments, replies, resolution, presence and deliberate handoff of
 feedback to the local agent's draft. No remote control of someone else's agent.
 
-## New in v0.3.1: a room per local project
+## New in v0.4.0: create rooms from Multiplayer
+
+Owners can now create a room for another local project from the UI, without SSH
+or copying a new token. Both the plugin and relay need this update; older relays
+keep existing sync working and show an upgrade message for room creation.
+
+## Introduced in v0.3.1: a room per local project
 
 One BB installation can now keep multiple projects connected at once, each to its
 own room on the same relay or on different relays. Select **Team project** on the
@@ -138,7 +144,7 @@ for setup, recovery semantics, safeguards, and remaining two-machine verificatio
 Install the pinned release on another BB installation:
 
 ```sh
-bb plugin install git:https://github.com/mihver1/bb-multiplayer.git@v0.3.1
+bb plugin install git:https://github.com/mihver1/bb-multiplayer.git@v0.4.0
 ```
 
 If Multiplayer is already installed from a local path or a different tracked
@@ -226,8 +232,45 @@ threads, comments and owner-request feed. All rooms use the **same relay origin*
 process and SQLite database. The member credential (or invitation during joining)
 selects the room; clients cannot select another room by passing its ID.
 
+#### Create from the UI (recommended after initial setup)
+
+1. On **Multiplayer → Team project**, select an unconnected local project.
+2. Choose **Create new room**.
+3. Select an existing **owner connection**. Its relay URL is used automatically;
+   it is not necessary to paste credentials or change the source project.
+4. Enter a room name and press **Create room and connect**.
+
+The new room has its own owner identity and credential; the display name is
+inherited from the selected owner. Other members, comments and threads are **not
+copied**, and no conversation is published automatically. The selected target
+project connects to the new room; other project connections are unchanged.
+
+Only authenticated, non-revoked **owners** can create rooms; ordinary members and
+anonymous callers cannot. Owning a room does not grant access to other rooms or
+the server-wide room inventory. Remote creation is capped at 100 total rooms per
+relay (including rooms provisioned locally), with a separate 10-requests/minute
+per-source-IP limit; behind a proxy that IP may be shared by the whole team.
+The local operator can still provision rooms above this remote cap.
+
+The plugin generates and saves the new credential in **BB secret settings before
+requesting creation**. Only its hash is sent in the creation body; the response
+contains IDs, not a token. The relay stores an idempotent creation record. A lost
+response or plugin reload leaves a saved **Retry room creation** action, which
+finishes the same operation instead of making a duplicate. Keep the original
+owner connection and the target project's secret settings while retrying. A
+pending target cannot be connected to another room or cleared via Disconnect,
+and its original owner connection cannot be disconnected until creation finishes;
+uncertain failures need retry/recovery, not discarded credentials. Newly created
+credentials live in BB, not a new credential file on the relay: include secret
+settings in backups.
+
+A **fresh relay** still needs its initial `relay:init` and owner connection once;
+there is deliberately no public anonymous room-creation endpoint.
+
+#### Local operator alternative
+
 `init` remains a one-time bootstrap and still refuses an existing database.
-To provision another project, run this **locally on the relay host**, pointing at
+To provision another project locally, run this **on the relay host**, pointing at
 the same `MULTIPLAYER_DATA_DIR` used by the running service:
 
 ```sh
@@ -244,15 +287,16 @@ npm run relay:list-rooms -- <nextCursor>
 - Each invocation intentionally creates a new room and owner credential, even
   if the display names match. Names are labels, not access-control identities.
 - `list-rooms` returns at most 50 room IDs/names and a nullable `nextCursor`.
-  It never returns member credentials. Room creation and the server-wide
-  inventory are **local operator commands**, not public HTTP endpoints; a room
-  owner has no administration rights over other rooms.
+  It never returns member credentials. The server-wide inventory remains
+  **local operator only**; the authenticated `POST /v1/rooms` endpoint creates
+  new rooms but cannot enumerate or administer someone else's rooms.
 - Give the new room's owner their credential privately. They connect using the
   same server URL and invite only their own teammates. The 100-membership limit
   and revocation apply independently to each room.
 
-Existing single-room databases need **no schema migration or reinitialization**:
-old credentials, invitations, history and cursors remain valid. Protocol v1 and
+Existing single-room databases need **no manual migration or reinitialization**:
+the relay adds its creation-record table automatically. Old credentials,
+invitations, history and cursors remain valid. Protocol v1 and
 existing clients are unchanged. The updated plugin supports **one room connection
 per local project**, with multiple projects connected simultaneously, including
 rooms on different relays. Older plugin releases still support only one connection
@@ -412,6 +456,9 @@ legacy database reopening, private credential creation/rollback, local CLI comma
 and simultaneous plugin connections to one or multiple origins. Plugin tests cover
 legacy migration and retry after secret-store failure, identical IDs across relays,
 project-scoped disconnect/revocation, moved local threads, UI selection and links.
+Room creation tests cover owner-only HTTP authorization, streamed-body revocation,
+rate/room caps, secret-store failures, lost acknowledgements, durable retries,
+no automatic sharing and UI onboarding without token copying.
 Live BB install/onboarding is
 checked separately; no real team conversation is shared during those checks.
 
@@ -428,6 +475,9 @@ checked separately; no real team conversation is shared during those checks.
 - `shared/discussions.ts` — deterministic grouping and parent-preserving previews.
 - `lib/discussion-target.ts` — ephemeral thread-scoped message-action targets.
 - `plugin/` — relay client, local persistence, allowlisted message projection.
+- `components/create-room.tsx` — owner-authorized room creation and retry UI.
+- `plugin/room-creation.ts` — non-secret pending-creation metadata.
+- `shared/rooms.ts` — room-creation wire schemas.
 - `shared/protocol.ts` — runtime-validated wire schemas.
 - `relay/` — standalone HTTP service, authentication and persistence.
 - `relay/admin.ts` — local-only room provisioning with private credential files.

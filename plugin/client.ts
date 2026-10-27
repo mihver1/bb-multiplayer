@@ -2,7 +2,11 @@ import { z } from "zod";
 import { ProtocolError, serverUrl } from "../shared/protocol";
 
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
-const healthSchema = z.object({ ok: z.literal(true), protocol: z.literal(1) });
+const healthSchema = z.object({
+  ok: z.literal(true),
+  protocol: z.literal(1),
+  capabilities: z.object({ roomCreation: z.boolean().optional() }).optional(),
+});
 const routingHint =
   "Check the server URL, DNS/VPN cache and reverse proxy. This address may still resolve to a different server.";
 const httpErrors: Record<number, string> = {
@@ -31,8 +35,8 @@ export class RelayClient {
   /** An unauthenticated preflight, not proof of server identity (TLS still is).
    * Never send a member credential or invitation to a visibly wrong endpoint.
    */
-  async checkHealth(): Promise<void> {
-    await this.request("/health", healthSchema, undefined, false);
+  async checkHealth() {
+    return this.request("/health", healthSchema, undefined, false);
   }
 
   async call<T>(

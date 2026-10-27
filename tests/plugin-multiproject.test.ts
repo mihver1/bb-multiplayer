@@ -98,6 +98,295 @@ afterEach(async () => {
   db.close();
 });
 
+it("creates a room from a saved owner connection, attaches only the target project and keeps tokens server-side", async () => {
+  const local = host();
+  plugin(local.bb);
+  await rpc(local, "connect", { projectId: "proj_a", url, token: a.token });
+  const before = await rpc(local, "status", { projectId: "proj_a" });
+  const original = globalThis.fetch,
+    calls: { url: string; body?: string }[] = [];
+  vi.stubGlobal(
+    "fetch",
+    (input: string | URL | Request, init?: RequestInit) => {
+      calls.push({
+        url: String(input),
+        body: init?.body as string | undefined,
+      });
+      return original(input, init);
+    },
+  );
+  expect(
+    (await rpc(local, "roomCreationOptions", { projectId: "proj_b" })).sources,
+  ).toEqual([
+    { projectId: "proj_a", url, roomName: "Room A", ownerName: "Owner A" },
+  ]);
+  const input = {
+    projectId: "proj_b",
+    sourceProjectId: "proj_a",
+    name: "Billing",
+  };
+  expect(await rpc(local, "createRoom", input)).toEqual({ ok: true });
+  const state = await rpc(local, "status", { projectId: "proj_b" });
+  expect(state.identity?.room.name).toBe("Billing");
+  expect(state.identity?.member).toMatchObject({
+    name: "Owner A",
+    role: "owner",
+  });
+  expect(state.identity?.members).toHaveLength(1);
+  expect(state.online).toBe(true);
+  expect(state.threads).toEqual([]);
+  expect((await rpc(local, "localThread", { threadId: "thr_b" })).sharing).toBe(
+    false,
+  );
+  expect(
+    (await rpc(local, "status", { projectId: "proj_a" })).connection,
+  ).toEqual(before.connection);
+  expect(
+    (await rpc(local, "roomCreationOptions", { projectId: "proj_b" })).pending,
+  ).toBeNull();
+  const payload = JSON.parse(
+    calls.find((c) => c.url.endsWith("/v1/rooms"))!.body!,
+  );
+  expect(Object.keys(payload).sort()).toEqual([
+    "name",
+    "requestId",
+    "tokenHash",
+  ]);
+  expect(payload.tokenHash).toMatch(/^[a-f0-9]{64}$/);
+  expect(await rpc(local, "createRoom", input)).toEqual({ ok: true });
+  expect(relay.listRooms().rooms).toHaveLength(3);
+  expect(local.harness.inspection.sdk.callsTo("threads.timeline")).toEqual([]);
+  expect(JSON.stringify(state)).not.toContain(a.token);
+});
+
+it.each(["lost-ack", "identity-failure"])(
+  "resumes pending room creation after %s and plugin reload without duplicates",
+  async (failure) => {
+    const local = host();
+    plugin(local.bb);
+    await rpc(local, "connect", { projectId: "proj_a", url, token: a.token });
+    const original = globalThis.fetch,
+      payloads: string[] = [];
+    let created = false,
+      failed = false;
+    vi.stubGlobal(
+      "fetch",
+      async (input: string | URL | Request, init?: RequestInit) => {
+        const path = String(input);
+        if (path.endsWith("/v1/rooms")) {
+          payloads.push(init!.body as string);
+          const response = await original(input, init);
+          created = true;
+          if (failure === "lost-ack" && !failed) {
+            failed = true;
+            throw new Error("Lost acknowledgement");
+          }
+          return response;
+        }
+        if (created && !failed && path.endsWith("/v1/me")) {
+          failed = true;
+          throw new Error("Temporary failure");
+        }
+        return original(input, init);
+      },
+    );
+    const input = {
+      projectId: "proj_b",
+      sourceProjectId: "proj_a",
+      name: "Retry room",
+    };
+    await expect(rpc(local, "createRoom", input)).rejects.toThrow();
+    expect(relay.listRooms().rooms).toHaveLength(3);
+    const pending = (
+      await rpc(local, "roomCreationOptions", { projectId: "proj_b" })
+    ).pending;
+    expect(pending).toMatchObject({
+      name: "Retry room",
+      sourceProjectId: "proj_a",
+    });
+    expect(JSON.stringify(pending)).not.toContain("token");
+    await expect(
+      rpc(local, "createRoom", { ...input, name: "Different" }),
+    ).rejects.toThrow("pending");
+    await expect(
+      rpc(local, "disconnect", { projectId: "proj_b" }),
+    ).rejects.toThrow("pending");
+    await expect(
+      rpc(local, "connect", { projectId: "proj_b", url, token: b.token }),
+    ).rejects.toThrow("pending");
+    const reloaded = await local.harness.lifecycle.reload(plugin);
+    hosts.push(reloaded);
+    expect(
+      (await rpc(reloaded, "roomCreationOptions", { projectId: "proj_b" }))
+        .pending,
+    ).toEqual(pending);
+    expect(await rpc(reloaded, "createRoom", input)).toEqual({ ok: true });
+    expect(payloads).toHaveLength(2);
+    expect(payloads[0]).toBe(payloads[1]);
+    expect(relay.listRooms().rooms).toHaveLength(3);
+    expect(
+      (await rpc(reloaded, "status", { projectId: "proj_b" })).identity?.room
+        .name,
+    ).toBe("Retry room");
+  },
+);
+
+it("rejects old relay capability, non-owner membership, and unavailable target projects before creation", async () => {
+  const local = host();
+  plugin(local.bb);
+  await rpc(local, "connect", { projectId: "proj_a", url, token: a.token });
+  const original = globalThis.fetch;
+  const calls: string[] = [];
+  vi.stubGlobal(
+    "fetch",
+    (input: string | URL | Request, init?: RequestInit) => {
+      calls.push(String(input));
+      return String(input).endsWith("/health")
+        ? Promise.resolve(
+            new Response(JSON.stringify({ ok: true, protocol: 1 }), {
+              headers: { "content-type": "application/json" },
+            }),
+          )
+        : original(input, init);
+    },
+  );
+  const input = { projectId: "proj_b", sourceProjectId: "proj_a", name: "New" };
+  await expect(rpc(local, "createRoom", input)).rejects.toThrow(
+    "Upgrade the relay",
+  );
+  expect(calls).toEqual([`${url}/health`]);
+  expect(
+    (await rpc(local, "roomCreationOptions", { projectId: "proj_b" })).pending,
+  ).toBeNull();
+  vi.unstubAllGlobals();
+  db.prepare("UPDATE members SET role='member' WHERE id=?").run(a.memberId);
+  await expect(rpc(local, "createRoom", input)).rejects.toThrow(
+    "Only a room owner",
+  );
+  expect(
+    (await rpc(local, "roomCreationOptions", { projectId: "proj_b" })).sources,
+  ).toEqual([]);
+  expect(relay.listRooms().rooms).toHaveLength(2);
+  local.harness.inspection.sdk.stub("projects.get", async () => {
+    throw new Error("Project not found");
+  });
+  await expect(rpc(local, "createRoom", input)).rejects.toThrow(
+    "Project not found",
+  );
+});
+
+it("fails closed if a pending credential is missing or the source account changes", async () => {
+  const local = host();
+  plugin(local.bb);
+  await rpc(local, "connect", { projectId: "proj_a", url, token: a.token });
+  const original = globalThis.fetch;
+  vi.stubGlobal(
+    "fetch",
+    async (input: string | URL | Request, init?: RequestInit) => {
+      const response = await original(input, init);
+      if (String(input).endsWith("/v1/rooms"))
+        throw new Error("Lost acknowledgement");
+      return response;
+    },
+  );
+  const input = {
+    projectId: "proj_b",
+    sourceProjectId: "proj_a",
+    name: "Pending",
+  };
+  await expect(rpc(local, "createRoom", input)).rejects.toThrow();
+  vi.unstubAllGlobals();
+  await local.harness.behavior.setSettings({
+    credentials: JSON.stringify({ proj_a: a.token }),
+  });
+  await expect(rpc(local, "createRoom", input)).rejects.toThrow(
+    "credential is missing",
+  );
+  await expect(
+    rpc(local, "disconnect", { projectId: "proj_a" }),
+  ).rejects.toThrow("pending room creations");
+  // Simulate an externally restored connection with a different account.
+  new LocalStore(local.bb.storage.database(), "proj_a").set("connection", {
+    url,
+    projectId: "proj_a",
+    roomId: b.roomId,
+    memberId: b.memberId,
+  });
+  await expect(rpc(local, "createRoom", input)).rejects.toThrow("pending");
+  expect(relay.listRooms().rooms).toHaveLength(3);
+  expect(
+    (await rpc(local, "roomCreationOptions", { projectId: "proj_b" })).pending
+      ?.name,
+  ).toBe("Pending");
+});
+
+it("does not strand a project after a definite first-request rejection", async () => {
+  const local = host();
+  plugin(local.bb);
+  await rpc(local, "connect", { projectId: "proj_a", url, token: a.token });
+  const original = globalThis.fetch;
+  vi.stubGlobal("fetch", (input: string | URL | Request, init?: RequestInit) =>
+    String(input).endsWith("/v1/rooms")
+      ? Promise.resolve(
+          new Response(JSON.stringify({ error: "Room limit reached" }), {
+            status: 409,
+            headers: { "content-type": "application/json" },
+          }),
+        )
+      : original(input, init),
+  );
+  await expect(
+    rpc(local, "createRoom", {
+      projectId: "proj_b",
+      sourceProjectId: "proj_a",
+      name: "At cap",
+    }),
+  ).rejects.toThrow();
+  expect(
+    (await rpc(local, "roomCreationOptions", { projectId: "proj_b" })).pending,
+  ).toBeNull();
+  expect(relay.listRooms().rooms).toHaveLength(2);
+  await rpc(local, "connect", { projectId: "proj_b", url, token: b.token });
+  expect(
+    (await rpc(local, "status", { projectId: "proj_b" })).identity?.room.id,
+  ).toBe(b.roomId);
+});
+
+it("does not create a room when persisting its owner secret fails", async () => {
+  const local = host();
+  const define = local.bb.settings.define.bind(local.bb.settings);
+  let fail = false;
+  const spy = vi
+    .spyOn(local.bb.settings, "define")
+    .mockImplementation((descriptors) => {
+      const handle = define(descriptors),
+        save = handle.experimental_set.bind(handle);
+      handle.experimental_set = async (values) => {
+        if (fail) throw new Error("Secret storage unavailable");
+        return save(values);
+      };
+      return handle;
+    });
+  plugin(local.bb);
+  spy.mockRestore();
+  await rpc(local, "connect", { projectId: "proj_a", url, token: a.token });
+  fail = true;
+  await expect(
+    rpc(local, "createRoom", {
+      projectId: "proj_b",
+      sourceProjectId: "proj_a",
+      name: "Unsaved",
+    }),
+  ).rejects.toThrow("Secret storage unavailable");
+  expect(relay.listRooms().rooms).toHaveLength(2);
+  expect(
+    (await rpc(local, "roomCreationOptions", { projectId: "proj_b" })).pending,
+  ).toBeNull();
+  expect(
+    (await rpc(local, "status", { projectId: "proj_a" })).connection?.roomId,
+  ).toBe(a.roomId);
+});
+
 it("connects and syncs two rooms in one installation without leaking credentials or context", async () => {
   const local = host();
   plugin(local.bb);

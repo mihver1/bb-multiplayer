@@ -340,12 +340,12 @@ describe("multiple projects on one relay", () => {
     }
   });
 
-  it("does not expose server-wide room management over HTTP", async () => {
+  it("does not expose the room inventory and validates creation input", async () => {
     for (const token of ["", a.memberToken, a.ownerToken]) {
       expect((await call(token, "rooms")).status).toBe(token ? 404 : 401);
       expect(
         (await call(token, "rooms", { name: "Unauthorized room" })).status,
-      ).toBe(token ? 404 : 401);
+      ).toBe(token ? 422 : 401);
     }
     expect(store.listRooms().rooms).toHaveLength(2);
   });

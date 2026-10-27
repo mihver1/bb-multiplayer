@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.4.0
+
+- Add **Create new room** in Multiplayer onboarding, using a saved owner
+  connection to create and connect a room for the selected local project.
+- Require a live owner credential, retain room isolation and deny anonymous or
+  ordinary-member provisioning; bound remote creation with a relay-wide room cap
+  and a separate rate limit.
+- Save the new token in BB secret settings before sending its hash to the relay;
+  persist idempotency metadata so retries and plugin reloads cannot duplicate rooms
+  or lose their credentials. Never enable thread sharing during creation.
+- Advertise creation capability in health; older relays retain existing sync and
+  show a targeted upgrade message instead of attempting unsupported provisioning.
+
 ## v0.3.1
 
 - Host multiple isolated project rooms on one relay origin and SQLite database.

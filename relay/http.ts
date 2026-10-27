@@ -13,6 +13,7 @@ import {
   ProtocolError,
 } from "../shared/protocol";
 import { RelayStore } from "./store";
+import { createRoomSchema } from "../shared/rooms";
 import {
   newMessageRequestSchema,
   reviewMessageRequestSchema,
@@ -60,17 +61,27 @@ export function createRelayServer(store: RelayStore) {
       if (buckets.size > 1000)
         for (const [key, value] of buckets)
           if (value.until < now) buckets.delete(key);
-      const key = `${req.socket.remoteAddress}:${route === "POST /v1/join" ? "join" : "api"}`;
+      const group =
+        route === "POST /v1/join"
+          ? "join"
+          : route === "POST /v1/rooms"
+            ? "rooms"
+            : "api";
+      const key = `${req.socket.remoteAddress}:${group}`;
       const bucket = buckets.get(key);
       if (bucket && bucket.until > now) {
-        if (++bucket.count > (route === "POST /v1/join" ? 10 : 1200))
+        if (++bucket.count > (group === "api" ? 1200 : 10))
           throw new ProtocolError(429, "Rate limit exceeded; retry later");
       } else {
         if (buckets.size >= 10_000) throw new ProtocolError(503, "Server busy");
         buckets.set(key, { until: now + 60_000, count: 1 });
       }
       if (route === "GET /health")
-        return send(res, 200, { ok: true, protocol: 1 });
+        return send(res, 200, {
+          ok: true,
+          protocol: 1,
+          capabilities: { roomCreation: true },
+        });
       if (route === "POST /v1/join") {
         const input = z
           .object({ code: z.string().min(32).max(200), name })
@@ -88,6 +99,10 @@ export function createRelayServer(store: RelayStore) {
       const after = () =>
         z.union([id, z.literal("")]).parse(url.searchParams.get("after") ?? "");
       switch (route) {
+        case "POST /v1/rooms": {
+          const input = createRoomSchema.parse(await body(req));
+          return send(res, 200, store.createRoomForOwner(freshActor(), input));
+        }
         case "GET /v1/request-events": {
           const after = z.coerce
             .number()

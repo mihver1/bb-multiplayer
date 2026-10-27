@@ -1,5 +1,28 @@
 # Self-hosted playground deployment
 
+## v0.4.0 UI room creation
+
+After updating both relay and plugin, existing owners can use **Multiplayer →
+Team project → Create new room** instead of SSH for each additional project.
+Creation uses an existing owner connection on the same origin. No additional
+admin credential or nginx configuration is required. A fresh relay still needs
+`init` once; do not rerun it for an existing database.
+
+The updated image must include `shared/rooms.ts`. The relay adds an idempotent
+`room_creations` table automatically and advertises `capabilities.roomCreation`
+in `/health`. `POST /v1/rooms` requires a non-revoked owner credential and accepts
+a request UUID, room name and hash of a new credential. It returns only IDs.
+The plugin saves the token in BB secret settings before contacting the relay;
+UI-created rooms do **not** write owner credential files on this server. Back up
+the owner's BB secret settings along with plugin storage.
+
+Remote creation is limited to 100 total rooms and 10 requests/minute/source IP
+(separate from sync traffic); the proxy means callers may share one IP bucket.
+The CLI remains available for operator provisioning and inventory. Room owners
+can create new rooms, not enumerate or administer rooms they do not belong to.
+Deploying this source changes that capability for existing owners. No public
+anonymous bootstrap, member self-service or automatic sharing is enabled.
+
 ## v0.3.0 release
 
 The v0.3.0 relay is API/schema-compatible with v0.2.0. Native mirrors run inside
@@ -41,7 +64,8 @@ name already exists. Failed credential-file writes roll back the room creation.
 
 All room owners use `https://multiplayer.selfhost.ru`, with separate credentials
 and invitations. Room owners cannot enumerate or administer other rooms through
-HTTP; creation and inventory require local operator access. `list-rooms` returns
+HTTP. The updated owner-only creation endpoint does not expose inventory;
+`list-rooms` still requires local operator access and returns
 only IDs/names (up to 50 per page) and a nullable `nextCursor`. The updated BB plugin
 can keep one connection per local project simultaneously; choose **Team project**
 on the Multiplayer page. Older releases still support one connection per BB.
@@ -54,7 +78,7 @@ The v0.2.0 relay adds owner message requests (additive SQLite tables and
 `/v1/request-events`). The image includes `shared/requests.ts`. Before deploying,
 back up SQLite consistently and recreate only the relay service. Old clients
 remain compatible because request events do not enter the v1 conversation feed.
-The current release image is `bb-multiplayer-relay:0.3.1`; retain the previous image and
+The current release image is `bb-multiplayer-relay:0.4.0`; retain the previous image and
 source backup for rollback. Never rerun `init` or replace the existing data directory.
 
 ## Live deployment

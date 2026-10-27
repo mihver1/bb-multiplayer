@@ -14,6 +14,11 @@ import {
 } from "../shared/protocol";
 
 import {
+  createRoomSchema,
+  REMOTE_ROOM_LIMIT,
+  type CreateRoom,
+} from "../shared/rooms";
+import {
   messageRequestSchema,
   type MessageRequest,
   type NewMessageRequest,
@@ -70,6 +75,12 @@ export class RelayStore {
       );
       CREATE TABLE IF NOT EXISTS request_events (seq INTEGER PRIMARY KEY AUTOINCREMENT, requestId TEXT NOT NULL REFERENCES message_requests(id));
       CREATE INDEX IF NOT EXISTS requests_participants ON message_requests(roomId, ownerId, authorId);
+      CREATE TABLE IF NOT EXISTS room_creations (
+        creatorId TEXT NOT NULL REFERENCES members(id), requestId TEXT NOT NULL,
+        roomId TEXT NOT NULL REFERENCES rooms(id), memberId TEXT NOT NULL REFERENCES members(id),
+        name TEXT NOT NULL, tokenHash TEXT NOT NULL,
+        PRIMARY KEY(creatorId, requestId)
+      );
     `);
   }
   private event(roomId: string, kind: string, id: string) {
@@ -84,7 +95,7 @@ export class RelayStore {
       return this.createRoom(roomName, ownerName);
     })();
   }
-  // Local operator only: room owners have no server-wide administration rights.
+  // Local operator bootstrap. Remote provisioning uses the owner-only method below.
   createRoom(roomName: string, ownerName: string) {
     roomName = name.parse(roomName);
     ownerName = name.parse(ownerName);
@@ -97,6 +108,65 @@ export class RelayStore {
         .prepare("INSERT INTO members VALUES (?, ?, ?, 'owner', ?, ?, 0)")
         .run(memberId, roomId, ownerName, digest(token), this.now());
       return { roomId, memberId, token };
+    })();
+  }
+  createRoomForOwner(actor: Actor, input: CreateRoom) {
+    input = createRoomSchema.parse(input);
+    return this.db.transaction(() => {
+      const current = this.db
+        .prepare(
+          "SELECT role FROM members WHERE id=? AND roomId=? AND revoked=0",
+        )
+        .get(actor.id, actor.roomId) as { role: string } | undefined;
+      if (!current) return fail(401, "Invalid or revoked member credential");
+      if (current.role !== "owner")
+        fail(403, "Only a room owner can create rooms");
+      const existing = this.db
+        .prepare(
+          "SELECT roomId, memberId, name, tokenHash FROM room_creations WHERE creatorId=? AND requestId=?",
+        )
+        .get(actor.id, input.requestId) as
+        | { roomId: string; memberId: string; name: string; tokenHash: string }
+        | undefined;
+      if (existing) {
+        if (
+          existing.name !== input.name ||
+          existing.tokenHash !== input.tokenHash
+        )
+          fail(409, "Room creation request already contains different data");
+        return { roomId: existing.roomId, memberId: existing.memberId };
+      }
+      // Global cap: a newly-created owner cannot evade it by creating more owners.
+      const count = this.db
+        .prepare("SELECT count(*) AS n FROM rooms")
+        .get() as { n: number };
+      if (count.n >= REMOTE_ROOM_LIMIT)
+        fail(409, "Remote room creation limit reached");
+      if (
+        this.db
+          .prepare("SELECT 1 FROM members WHERE tokenHash=?")
+          .get(input.tokenHash)
+      )
+        fail(409, "A new room requires a unique owner credential");
+      const roomId = randomUUID(),
+        memberId = randomUUID();
+      this.db
+        .prepare("INSERT INTO rooms VALUES (?, ?)")
+        .run(roomId, input.name);
+      this.db
+        .prepare("INSERT INTO members VALUES (?, ?, ?, 'owner', ?, ?, 0)")
+        .run(memberId, roomId, actor.name, input.tokenHash, this.now());
+      this.db
+        .prepare("INSERT INTO room_creations VALUES (?, ?, ?, ?, ?, ?)")
+        .run(
+          actor.id,
+          input.requestId,
+          roomId,
+          memberId,
+          input.name,
+          input.tokenHash,
+        );
+      return { roomId, memberId };
     })();
   }
   listRooms(after = "") {
