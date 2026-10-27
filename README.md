@@ -6,7 +6,25 @@ A working first slice of team collaboration: opt-in live conversation previews,
 contextual comments, replies, resolution, presence and deliberate handoff of
 feedback to the local agent's draft. No remote control of someone else's agent.
 
-## New in v0.2.1
+## New in v0.3.0
+
+- **Native thread view:** opt-in Multiplayer Mirror provider, no model or code
+  execution. Open a teammate's shared view → **Open native view**, select a machine,
+  and use the native composer to propose text to its owner.
+- Durable import receipts prevent normal reconnect/retry duplication. Uncertain
+  partial imports fail closed; source edits append explicitly labelled versions.
+- **Sidebar project actions restored:** settings, rename, and confirmed removal
+  from hover, keyboard and context menus. Local child-thread grouping and compact
+  archive controls from v0.2.1 are retained.
+- Matching host/provider artifact, relay packaging and regression tests ship in
+  this release. Relay APIs remain compatible with v0.2.0 clients.
+
+Native mirrors remain opt-in for new installations. Enable **Enable experimental
+native thread mirrors** in Multiplayer settings (or `bb plugin config multiplayer
+set nativeMirrors true`). This enables the native view, not automatic sharing,
+agent execution, attachments, or provider switching. See the limitations below.
+
+## Introduced in v0.2.1
 
 - Compact archive/archive-off glyphs beside search, with hover/focus tooltips.
 - A consistent background across the thread list and search toolbar.
@@ -33,11 +51,25 @@ owners** require plugin and relay v0.2.0 or later for the full workflow.
   environment organization is not yet replicated. Enabling it may select it;
   **Settings → Appearance → Sidebar** can pin the builtin list instead.
 
-A direct provider-bridge projection experiment is tested but **not registered or
-activated**. Native mirrors need durable import/resume/edit semantics; pretending
-that replayed snapshots are executable threads would duplicate history and blur
-ownership. See [docs/native-mirror.md](docs/native-mirror.md) for the implementation
-boundary and remaining work. No ACP agent has been installed or spawned.
+## Experimental native thread view
+
+A native **Multiplayer Mirror** provider bridge is implemented behind the
+`nativeMirrors` setting (off by default). On a teammate's shared view, **Open native
+view** creates an isolated local BB thread on an explicitly chosen machine.
+Refresh imports new observed messages; native composer text becomes an owner
+proposal, never an agent execution. Credentials stay server-side.
+
+Imports are acknowledged only after canonical BB events persist; reconnects
+reconcile the pending batch rather than duplicate it. Partial/uncertain writes
+stop safely for recovery. Source edits append labelled versions, and remote
+bodies are plaintext-quoted to prevent local rendering of active directives/images.
+Native provider-observed user rows may be collapsed by BB. This is a bounded
+preview, not a full agent-session replica. Background native streaming and
+message-anchor mapping are not yet implemented.
+
+The native provider was verified using a separate temporary provider/plugin and
+synthetic loopback relay, then cleaned up. See [docs/native-mirror.md](docs/native-mirror.md)
+for setup, recovery semantics, safeguards, and remaining two-machine verification.
 
 ## Collaboration features
 
@@ -88,7 +120,7 @@ boundary and remaining work. No ACP agent has been installed or spawned.
 Install the pinned release on another BB installation:
 
 ```sh
-bb plugin install git:https://github.com/mihver1/bb-multiplayer.git@v0.2.1
+bb plugin install git:https://github.com/mihver1/bb-multiplayer.git@v0.3.0
 ```
 
 If Multiplayer is already installed from a local path or a different tracked
@@ -291,6 +323,8 @@ This is a pilot, not a production-hardened multi-tenant service.
   production load/security audit, distributed deployment or turnkey hosting.
 - No mention inbox, push notifications, diff-line comments, “continue locally,”
   session transfer, file sync, E2EE, content deletion or owner recovery UI yet.
+  Opt-in native mirrors use explicit Refresh and append revisions; they do not
+  import hidden model state or erase already downloaded history.
 
 ## Verification
 
@@ -316,7 +350,7 @@ checked separately; no real team conversation is shared during those checks.
 - `components/team-thread-list.tsx` — local/team sidebar replacement.
 - `components/message-requests.tsx` — proposal composer, inbox toast and owner review.
 - `shared/requests.ts` — separate request protocol and schemas.
-- `provider/mirror-projection.ts` — unregistered native-timeline feasibility spike.
+- `provider/` and `host.ts` — opt-in native mirror provider, isolation and durable import ledger.
 - `components/discussion-list.tsx` — grouped roots/replies and resolved branches.
 - `shared/discussions.ts` — deterministic grouping and parent-preserving previews.
 - `lib/discussion-target.ts` — ephemeral thread-scoped message-action targets.

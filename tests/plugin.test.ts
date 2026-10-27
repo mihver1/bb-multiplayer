@@ -28,6 +28,8 @@ function makeClient(projectId: string, threadId: string) {
   });
   const host = createFakePluginHost({
     pluginId: "multiplayer",
+    experimental_declaredIconNames: ["people"],
+    agentSkillIds: ["multiplayer"],
     sdk: {
       projects: {
         list: async () => [{ id: projectId, name: projectId }],

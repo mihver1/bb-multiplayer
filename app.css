@@ -113,9 +113,28 @@
   }
 }
 
+/* Reserve the project menu's space; reveal it on hover/focus on mouse devices.
+   Touch devices keep an explicit menu button as an alternative to long-press. */
+.multiplayer-project-actions {
+  opacity: 1;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .multiplayer-project-actions {
+    opacity: 0;
+  }
+
+  [data-sidebar-project-id]:hover .multiplayer-project-actions,
+  [data-sidebar-project-id]:focus-within .multiplayer-project-actions,
+  [data-sidebar-project-id][data-actions-open] .multiplayer-project-actions {
+    opacity: 1;
+  }
+}
+
 /* A touchscreen on a hybrid machine must not need a simulated hover. */
 @media (any-pointer: coarse) {
-  .multiplayer-comment-actions {
+  .multiplayer-comment-actions,
+  .multiplayer-project-actions {
     opacity: 1;
     pointer-events: auto;
   }

@@ -1,13 +1,23 @@
 # Self-hosted playground deployment
 
-## v0.2.0 upgrade
+## v0.3.0 release
+
+The v0.3.0 relay is API/schema-compatible with v0.2.0. Native mirrors run inside
+BB's plugin/host artifact; no model or native agent process runs on this relay.
+Upgrade only the `relay` Compose service after making a consistent database
+backup, preserve the existing data directory, and keep the previous image/source
+for rollback. Version-specific deployment evidence belongs in the private
+`/opt/bb-multiplayer-playground/releases/v0.3.0` directory, not Git. No nginx or
+firewall changes are needed.
+
+## Existing protocol / upgrade history
 
 The v0.2.0 relay adds owner message requests (additive SQLite tables and
 `/v1/message-requests`, `/v1/message-request`, `/v1/review-request`,
 `/v1/request-events`). The image includes `shared/requests.ts`. Before deploying,
 back up SQLite consistently and recreate only the relay service. Old clients
 remain compatible because request events do not enter the v1 conversation feed.
-The release image is `bb-multiplayer-relay:0.2.0`; retain the previous image and
+The release image is `bb-multiplayer-relay:0.3.0`; retain the previous image and
 source backup for rollback. Never rerun `init` or replace the existing data directory.
 
 ## Live deployment

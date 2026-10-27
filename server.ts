@@ -28,6 +28,9 @@ import {
   requestFeedSchema,
   reviewMessageRequestSchema,
 } from "./shared/requests";
+import { registerMirrors } from "./provider/service";
+import { mirrorMigrations } from "./provider/mirror-store";
+import { MIRROR_PROVIDER, nativeMirrorStateSchema } from "./provider/contracts";
 
 const connectionSchema = z.object({
   url: z.string(),
@@ -61,6 +64,27 @@ export const rpcContract = defineRpcContract({
       identity: identitySchema.nullable(),
       threads: z.array(summarySchema).max(200),
       truncated: z.boolean(),
+    }),
+  },
+  openNativeMirror: {
+    input: z.object({ sharedId: uuid, hostId: id }).strict(),
+    output: z.object({ threadId: id }),
+  },
+  refreshNativeMirror: {
+    input: z.object({ threadId: id }).strict(),
+    output: z.object({ ok: z.boolean() }),
+  },
+  nativeMirrorState: {
+    input: z.object({ threadId: id }).strict(),
+    output: nativeMirrorStateSchema,
+  },
+  nativeMirrorOptions: {
+    input: z.null(),
+    output: z.object({
+      enabled: z.boolean(),
+      mirrors: z
+        .array(z.object({ localId: id, sharedId: uuid, active: z.boolean() }))
+        .max(200),
     }),
   },
   requestState: {
@@ -138,6 +162,7 @@ export const rpcContract = defineRpcContract({
       identity: identitySchema.nullable(),
       commentCount: z.number().int().nonnegative(),
       openCount: z.number().int().nonnegative(),
+      isMirror: z.boolean().optional(),
     }),
   },
   thread: {
@@ -176,9 +201,16 @@ export default function plugin(bb: BbPluginApi) {
       label: "Member credential (managed by Connect)",
       secret: true,
     },
+    nativeMirrors: {
+      type: "boolean",
+      label: "Enable experimental native thread mirrors",
+      description:
+        "Creates isolated local view threads. Imports on open/Refresh; edits append labelled versions. No model or code execution.",
+      default: false,
+    },
   });
   const db = bb.storage.database();
-  bb.storage.migrate(db, LocalStore.migrations);
+  bb.storage.migrate(db, [...LocalStore.migrations, ...mirrorMigrations]);
   const store = new LocalStore(db);
   const lifetime = new AbortController();
   let lastSyncAt: number | null = null,
@@ -210,6 +242,21 @@ export default function plugin(bb: BbPluginApi) {
       AbortSignal.any([signal, lifetime.signal]),
     );
   }
+  const native = registerMirrors(bb, store, {
+    enabled: async () => (await settings.get()).nativeMirrors,
+    connection,
+    client,
+    signal: lifetime.signal,
+    changed,
+  });
+  settings.onChange((next, previous) => {
+    if (!next.nativeMirrors && previous.nativeMirrors)
+      void native
+        .disconnect()
+        .catch(() =>
+          bb.log.warn("Mirror shutdown incomplete; mappings are blocked"),
+        );
+  });
   async function heartbeat(remote: RelayClient) {
     const identity = await remote.call("me", identitySchema);
     const conn = connection();
@@ -232,7 +279,8 @@ export default function plugin(bb: BbPluginApi) {
       await heartbeat(remote);
       let publicationFailed = false;
       for (const initial of store.links()) {
-        if (!initial.enabled) continue;
+        if (!initial.enabled || native.mirrors.byLocal(initial.localId))
+          continue;
         try {
           // A prepared payload survives lost acknowledgements and process restarts.
           if (initial.payload) {
@@ -373,6 +421,7 @@ export default function plugin(bb: BbPluginApi) {
           ? cause.message
           : "Sync failed. Check the relay connection and local thread availability; pending data will retry.";
       if (cause instanceof ProtocolError && cause.status === 401) {
+        await native.disconnect();
         store.reset();
         await settings.experimental_set({ credential: null });
       }
@@ -389,6 +438,53 @@ export default function plugin(bb: BbPluginApi) {
   }
 
   bb.rpc.register(rpcContract, {
+    openNativeMirror: ({ sharedId, hostId }) =>
+      serial(() => native.open(sharedId, hostId)),
+    refreshNativeMirror: async ({ threadId }) => {
+      await native.refresh(threadId);
+      return { ok: true };
+    },
+    nativeMirrorOptions: async () => ({
+      enabled: (await settings.get()).nativeMirrors,
+      mirrors: native.mirrors
+        .list()
+        .filter(
+          (m) =>
+            m.localId &&
+            m.roomId === connection()?.roomId &&
+            m.memberId === connection()?.memberId &&
+            m.projectId === connection()?.projectId,
+        )
+        .slice(0, 200)
+        .map((m) => ({
+          localId: m.localId!,
+          sharedId: m.sharedId,
+          active: m.state === "ready",
+        })),
+    }),
+    nativeMirrorState: async ({ threadId }) => {
+      const mirror = native.mirrors.byLocal(threadId),
+        conn = connection();
+      const remote = mirror ? store.getThread(mirror.sharedId) : null;
+      return {
+        enabled: (await settings.get()).nativeMirrors,
+        isMirror: Boolean(mirror),
+        sharedId: mirror?.sharedId ?? null,
+        localId: mirror?.localId ?? null,
+        ownerName: remote
+          ? (store.identity()?.members.find((m) => m.id === remote.ownerId)
+              ?.name ?? "Remote owner")
+          : null,
+        connected: Boolean(
+          mirror &&
+          mirror.state === "ready" &&
+          conn &&
+          mirror.roomId === conn.roomId &&
+          mirror.memberId === conn.memberId &&
+          online,
+        ),
+      };
+    },
     status: async () => {
       const projects = await bb.sdk.projects.list();
       const links = store.links(),
@@ -422,7 +518,16 @@ export default function plugin(bb: BbPluginApi) {
         truncated: threads.length > 200,
         threads: threads.slice(0, 200).map(({ messages: _, ...thread }) => ({
           ...thread,
-          localId: links.find((l) => l.sharedId === thread.id)?.localId ?? null,
+          localId:
+            links.find((l) => l.sharedId === thread.id)?.localId ??
+            (conn
+              ? (native.mirrors.find({
+                  roomId: conn.roomId,
+                  memberId: conn.memberId,
+                  projectId: conn.projectId,
+                  sharedId: thread.id,
+                })?.localId ?? null)
+              : null),
           sharing: Boolean(
             links.find((l) => l.sharedId === thread.id)?.enabled,
           ),
@@ -582,6 +687,7 @@ export default function plugin(bb: BbPluginApi) {
       }),
     disconnect: () =>
       serial(async () => {
+        await native.disconnect();
         store.reset();
         await settings.experimental_set({ credential: null });
         online = false;
@@ -612,6 +718,13 @@ export default function plugin(bb: BbPluginApi) {
         const conn = connection();
         if (!conn) throw new Error("Connect a project first");
         const thread = await bb.sdk.threads.get({ threadId });
+        if (
+          thread.providerId === MIRROR_PROVIDER ||
+          native.mirrors.byLocal(threadId)
+        )
+          throw new Error(
+            "Mirrors cannot be republished; share the original owner's thread instead",
+          );
         if (thread.projectId !== conn.projectId)
           throw new Error("Thread is outside the connected project");
         store.enable(threadId);
@@ -641,7 +754,9 @@ export default function plugin(bb: BbPluginApi) {
         conn && thread.projectId === conn.projectId,
       );
       const link = connectedProject ? store.link(threadId) : undefined;
-      const comments = link ? store.comments(link.sharedId) : [];
+      const mirror = connectedProject ? native.mirrors.byLocal(threadId) : null;
+      const sharedId = link?.sharedId ?? mirror?.sharedId ?? null;
+      const comments = sharedId ? store.comments(sharedId) : [];
       return {
         threadTitle: (
           thread.title ??
@@ -649,7 +764,8 @@ export default function plugin(bb: BbPluginApi) {
           "Untitled thread"
         ).slice(0, 300),
         connectedProject,
-        sharedId: link?.sharedId ?? null,
+        sharedId,
+        isMirror: Boolean(mirror),
         sharing: Boolean(link?.enabled),
         online: connectedProject && online,
         identity: connectedProject ? store.identity() : null,
@@ -729,8 +845,9 @@ export default function plugin(bb: BbPluginApi) {
 
   // Event notifications are ephemeral; startup reconciliation catches an unloaded period.
   for (const link of store.links()) store.dirty(link.localId);
-  const dirty = ({ thread }: { thread: { id: string } }) =>
-    store.dirty(thread.id);
+  const dirty = ({ thread }: { thread: { id: string } }) => {
+    if (!native.mirrors.byLocal(thread.id)) store.dirty(thread.id);
+  };
   bb.events.on("experimental_thread.events", dirty);
   bb.events.on("thread.active", dirty);
   bb.events.on("thread.idle", dirty);
@@ -775,5 +892,6 @@ export default function plugin(bb: BbPluginApi) {
   bb.onDispose(async () => {
     lifetime.abort();
     await tail;
+    await native.dispose();
   });
 }

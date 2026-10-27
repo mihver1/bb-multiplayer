@@ -38,8 +38,21 @@ proposal composer on remote read-only thread views. The relay
 upgrade adds a separate owner-request feed. Older relays leave proposals disabled
 without breaking normal sync. Do not redeploy or switch the active user's sidebar
 without telling them; builtin section/tree/environment grouping is not fully
-replicated yet. Native mirror provider activation is still pending; see
-`docs/native-mirror.md`. The projection spike has no host/provider registration.
+replicated yet. The v0.3.0 native mirror provider is registered but gated
+by `nativeMirrors` (default false); see `docs/native-mirror.md`. Open it explicitly
+from a teammate's shared view with a selected host. It uses an isolated empty
+workspace and no model. Native composer text creates only an owner proposal;
+`/multiplayer-refresh` imports a bounded preview. Do not enable it or create real
+mirrors without user authorization. Do not work around the human-only proposal
+check by changing initiator attribution or using another API.
+
+Never share a mirror back into the room, switch it to an executing provider, or
+clear its import ledger to fix duplication: pending batches must be reconciled
+against persisted BB events. Uncertain partial imports fail closed and need an
+operator decision. Edits append labelled versions; disconnect/revocation does not
+erase native history. Native row IDs are not remote comment anchors; use Open
+source & discussions. The only mirror tool is an internal server-gated transport,
+not an agent execution tool, and must never expose relay credentials.
 
 An owner-review request is not a direct message to an agent. Only the actual thread
 owner can review it; Add to my draft appends untrusted quoted data to the matching

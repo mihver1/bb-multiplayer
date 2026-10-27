@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.3.0
+
+- Add the opt-in Multiplayer Mirror provider and isolated host workspace for native
+  BB thread views; no ACP shim, model, shell, or agent execution.
+- Import bounded shared previews on open/Refresh with durable per-source version
+  tracking and canonical-event receipts; block uncertain partial replays.
+- Append labelled remote revisions, quote active Markdown as plain text, and
+  keep already imported history explicit after disconnection/revocation.
+- Route native composer text into idempotent owner-review requests. Reject
+  attachments, mentions, agent-origin proposals, provider switching and mirror
+  re-publication. Keep ordinary agent tools/skills unchanged.
+- Restore sidebar project settings, rename and confirmation-based removal via
+  hover/dropdown/context menus, with keyboard and touch access.
+- Preserve v0.2.1 child-thread grouping, archived paging and compact controls.
+- Add bridge conformance, import-recovery, safety, sidebar and native-view UI tests.
+- Ship relay image v0.3.0 with the existing backward-compatible v0.2 request API.
+
 ## v0.2.1
 
 - Replace the archive text selector with compact archive/archive-off glyphs beside

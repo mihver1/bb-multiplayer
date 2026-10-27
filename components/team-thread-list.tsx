@@ -21,6 +21,7 @@ import type { rpcContract } from "../server";
 import { useTeamQuery } from "../hooks/use-team-query";
 import { Icon } from "./ui/icon";
 import { IconAction } from "./icon-action";
+import { ProjectHeader } from "./project-header";
 import { cn } from "../lib/utils";
 
 /** Keep each family's rows together, preserving the supplied sibling order. */
@@ -288,47 +289,22 @@ export function TeamThreadList(props: PluginThreadListProps) {
         remaining -= remoteRows.length;
         return (
           <section key={project.id} className="mt-2" aria-label={project.name}>
-            <div className="flex items-center gap-1 px-2">
-              <button
-                type="button"
-                className="flex min-w-0 flex-1 items-center gap-1.5 rounded py-2 text-left text-xs font-semibold text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                aria-expanded={!collapsed.has(project.id)}
-                onClick={() =>
-                  setCollapsed((old) => {
-                    const next = new Set(old);
-                    next.has(project.id)
-                      ? next.delete(project.id)
-                      : next.add(project.id);
-                    return next;
-                  })
-                }
-              >
-                <Icon
-                  name={
-                    collapsed.has(project.id) ? "ChevronRight" : "ChevronDown"
-                  }
-                  aria-hidden="true"
-                  className="size-3.5 shrink-0"
-                />
-                <span className="min-w-0 truncate">
-                  {project.name}
-                  {team?.projectId === project.id ? " · Team" : ""}
-                </span>
-              </button>
-              <button
-                aria-label={`New thread in ${project.name}`}
-                className="rounded p-1 text-muted-foreground"
-                onClick={() => {
-                  navigate.toCompose({
-                    projectId: project.id,
-                    focusPrompt: true,
-                  });
-                  props.onNavigate();
-                }}
-              >
-                <Icon name="Plus" className="size-4" />
-              </button>
-            </div>
+            <ProjectHeader
+              project={project}
+              shared={team?.projectId === project.id}
+              collapsed={collapsed.has(project.id)}
+              active={props.activeProjectId === project.id}
+              onToggle={() =>
+                setCollapsed((old) => {
+                  const next = new Set(old);
+                  next.has(project.id)
+                    ? next.delete(project.id)
+                    : next.add(project.id);
+                  return next;
+                })
+              }
+              onNavigate={props.onNavigate}
+            />
             {!collapsed.has(project.id) && (
               <>
                 {projectRows.map(({ thread, depth }) => (

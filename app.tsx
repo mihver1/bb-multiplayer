@@ -27,6 +27,10 @@ import { DiscussionList } from "./components/discussion-list";
 import { groupDiscussions } from "./shared/discussions";
 import { TeamThreadList } from "./components/team-thread-list";
 import {
+  OpenNativeMirror,
+  NativeMirrorBanner,
+} from "./components/native-mirror";
+import {
   MessageRequestComposer,
   OwnerRequestBanner,
   OwnerRequestInbox,
@@ -798,11 +802,14 @@ function ThreadDetail({
         data.localId === null &&
         identity &&
         data.thread.ownerId !== identity.member.id && (
-          <MessageRequestComposer
-            key={id}
-            sharedId={id}
-            ownerName={author(data.thread.ownerId)}
-          />
+          <div className="space-y-3">
+            <OpenNativeMirror key={`native-${id}`} sharedId={id} />
+            <MessageRequestComposer
+              key={id}
+              sharedId={id}
+              ownerName={author(data.thread.ownerId)}
+            />
+          </div>
         )}
       <section
         className={inline ? "multiplayer-widget-discussions" : "space-y-3"}
@@ -1087,12 +1094,12 @@ function FloatingThreadDiscussion({
       title={data?.threadTitle ?? "Team discussion"}
       subtitle={
         data
-          ? `${data.sharing ? "Shared" : data.sharedId ? "Sharing paused" : "Private"} · ${data.online ? "Online" : "Offline"}`
+          ? `${data.isMirror ? "Remote mirror" : data.sharing ? "Shared" : data.sharedId ? "Sharing paused" : "Private"} · ${data.online ? "Online" : "Offline"}`
           : "Loading thread…"
       }
       badge={data?.commentCount ?? 0}
       headerActions={
-        data?.connectedProject ? (
+        data?.connectedProject && !data.isMirror ? (
           <IconAction
             label="Sharing settings"
             hint="Sharing settings"
@@ -1130,7 +1137,7 @@ function FloatingThreadDiscussion({
           </div>
         ) : (
           <>
-            {(!data.sharedId || settingsOpen) && (
+            {!data.isMirror && (!data.sharedId || settingsOpen) && (
               <div className="multiplayer-widget-sharing space-y-3 rounded-lg border border-border p-3">
                 <p className="text-xs text-muted-foreground">
                   Sharing publishes the title, status and recent human/assistant
@@ -1341,6 +1348,13 @@ export default definePluginApp((app) => {
     scopes: ["thread"],
     banners: [
       { id: "owner-requests", chrome: "bare", component: OwnerRequestBanner },
+    ],
+  });
+  app.composer.customize({
+    id: "native-mirror-notice",
+    scopes: ["thread"],
+    banners: [
+      { id: "native-mirror", chrome: "bare", component: NativeMirrorBanner },
     ],
   });
   // Keep saved legacy tabs usable; all new local interactions use the overlay.

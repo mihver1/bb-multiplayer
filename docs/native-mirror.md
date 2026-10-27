@@ -1,84 +1,123 @@
-# Native Multiplayer thread view — implementation boundary
+# Native Multiplayer thread view · Experimental, opt-in
 
-## Implemented in v0.2.0
+Version 0.3.0 adds a native BB provider bridge, **Multiplayer Mirror**. It is
+not an ACP shim and never calls a model, shell, filesystem tools or another
+agent. The existing read-only shared view remains available; native mirrors
+require explicit enablement and opening by the user.
 
-- `components/team-thread-list.tsx`: public `experimental_threadList`, local
-  navigation/menus and remote shared rows grouped by the explicitly connected
-  local project. Shared rows use the Multiplayer glyph. Local shared threads are
-  not duplicated. Hidden local threads remain hidden. Lists are rendered in
-  bounded batches; archived paging uses BB's hook.
-- Remote rows currently open **the plugin-owned read-only conversation view**,
-  not a native executable BB thread. A clearly labelled proposal composer sends
-  only a durable owner-review request.
-- `shared/requests.ts`: request IDs, authenticated author/actual thread owner,
-  pending/drafted/dismissed states and optimistic version checks.
-- Separate `/v1/request-events` feed so existing protocol-1 clients do not fail
-  on a new conversation event kind. Older relays disable proposals but continue
-  normal conversation/comment sync.
-- Owner notification + local composer banner, explicit Add to my draft/Dismiss.
-  Existing drafts are appended to, never replaced or submitted. The request's
-  body is JSON-quoted as untrusted teammate data.
+## Try after building/installing this version
 
-## What the provider experiment demonstrates
+1. Enable **Enable experimental native thread mirrors** in Multiplayer settings.
+2. Open a teammate's shared conversation and choose **Open native view**.
+3. Select a machine explicitly. The plugin creates an isolated empty directory
+   under its host data, not a worktree or the user's project checkout.
+4. The created BB thread uses `multiplayer-mirror`. **Refresh shared preview**
+   imports new observed message versions. Native composer text creates an owner
+   proposal; the owner still reviews and sends their own draft separately.
 
-`provider/mirror-projection.ts` and its assembler test use the installed public
-SDK (0.6.49), not private imports. Grammar v3 supports `input.provider` for an
-externally observed user message and `agentMessage` items for the answer. A
-native mirror does **not** need a pretend ACP process: a BB provider bridge is
-sufficient. No provider or host entry is registered in this slice.
+No relay deployment is required: this uses the v0.2 request API. Native mirrors
+start disabled. The provider may be visible in pickers, but arbitrary creation
+is rejected; use the shared conversation's explicit open action. A mirror cannot
+become a regular agent through provider switching/forking, and cannot be shared
+back to the room. These checks run on the server dispatch boundary, not just UI.
 
-Relevant upstream contracts, checked before implementation:
+## Architecture and ownership
 
-- https://github.com/get-bb/bb/blob/main/docs/provider-plugin-api.md
-- https://github.com/get-bb/bb/blob/main/docs/provider-bridge-protocol.md
-- https://github.com/get-bb/bb/tree/main/examples/plugins/echo-provider
+- `host.ts`: isolated empty-workspace RPC plus the provider bridge export.
+- `provider/bridge.ts`: grammar-v3 lifecycle, native text, one internal dynamic
+  tool transport, cancellation, explicit proposal result. No network or code
+  execution in the bridge; all other injected tools are ignored.
+- `provider/service.ts`: provider/environment registration, connection/ownership
+  checks, local thread mapping, import confirmation and proposal routing.
+- `provider/mirror-store.ts`: durable mappings and per-source version ledger.
+- `provider/mirror-projection.ts`: bounded batches, safe plaintext projection,
+  and verification against canonical persisted BB events.
+- `components/native-mirror.tsx`: explicit open/machine selection and a native
+  composer banner explaining the non-executing owner-proposal behavior.
 
-The public assembler owns and mints turn/item IDs. `session.reset` resets its ID
-space; it does not replace the persisted BB timeline. Replaying the same remote
-snapshot after a fresh session construction creates more history. The current
-relay protocol stores only a bounded current snapshot (100 messages, some text
-truncated), not a durable remote event log suitable for exactly-once imports.
-There is no public plugin operation to replace arbitrary canonical thread history.
+The real member credential stays in the BB backend. It never enters provider
+options, env or bridge IPC. The bridge calls only `multiplayer_mirror_io` through
+BB's authenticated provider tool channel. Its handler checks the calling thread's
+server-owned mapping, actual provider, project, connection identity and lifecycle.
+Mutable plugin metadata is not an authorization boundary. Ordinary agents do not
+receive this tool; forged direct calls without a mapped mirror fail.
 
-## Required before activating a native mirror provider
+The mapping is reserved before spawning. The first dispatch binds it only when
+the plugin origin, dedicated environment ID, UUID and selected host agree. A lost
+creation acknowledgement does not create a second local thread. An unbound
+ambiguous reservation fails closed and requires operator recovery.
 
-1. **Durable mirror identity**: server-owned mapping of room/member/sharedThread
-   to local BB thread, environment and import cursor. Metadata is not an auth
-   boundary. Create on explicit open, recover interrupted creation without duplicates.
-2. **Canonical import semantics**: stable remote message/version IDs and a
-   host-supported history-upsert/import surface (or an explicitly append-only
-   remote history with revisions displayed as such). Resume must never replay
-   already imported items. Do not claim current snapshots are complete history.
-3. **Live updates**: owner edits, deletes, stops sharing, archive and member
-   revocation need defined handling, including already cached native content.
-   A provider lifetime cannot silently keep importing after release/stop.
-4. **No execution**: disable tools, file/terminal access, compaction/fork/goals;
-   server admission hook must reject provider switching on a mapped mirror and
-   prevent mirrors from being published back into the same room (sync loops).
-5. **Submit → proposal**: route the mirror's text submission to the existing
-   owner-request API, using client request IDs for retry deduplication. Do not
-   silently upload local attachments or resolve mentions into private file data.
-   Owner acceptance is only draft insertion, not an agent turn.
-6. **Secure bridge transport**: relay/member credentials must never go in
-   `deriveProviderOptions` or environment diagnostics. Prefer BB-authenticated
-   host RPC/dynamic-tool calls narrowly gated by the mirror's actual provider,
-   mapping and membership. Provider options may contain only non-secret IDs.
-7. **Conformance and real two-instance verification**: history replay, disconnect,
-   double-open, edit races, runtime restart, revoke, provider switch, request
-   duplicate prevention, drafts and split-pane targeting. Verify on separate BB
-   servers, not just two browser windows of one BB.
+## Persistence / reconnect contract
 
-## Pilot limits of the implemented UI slice
+The server prepares one batch of at most four source messages and durably records
+it **before** giving it to the bridge. The bridge emits the native messages and a
+suppressed extension receipt in the same turn. A commit is accepted only after
+BB's public events API shows the receipt **and every expected message**, in order,
+in that same turn. Reads use the live API's maximum of 100 events per page.
 
-The list is a simplified alternative, not a fork of every builtin sidebar feature:
-project grouping, pinned-first order, search, native menus, draft/status markers,
-split drag and archived loading are present; arbitrary section/tree/environment
-organization is not yet reproduced. Installing/enabling a thread-list slot can
-select it automatically; announce the change before enabling it in an ongoing BB
-session. Appearance settings can pin the builtin list instead.
+Only then does the local version ledger advance. On reconnect or a lost commit,
+the pending batch is checked against BB persistence again:
 
-Notifications are local BB toasts/banner, not OS push. A mounted banner deduplicates
-insertion after a lost review acknowledgement; a page reload between insertion
-and acknowledgement is not exactly-once (draft and relay are separate stores).
-The user must inspect the draft in that case. Attachments, automatic owner sends
-and native mirror activation are intentionally not shipped yet.
+- persisted batch → acknowledge it, do not re-emit;
+- partial/uncertain batch → stop with an error, **never replay automatically**.
+
+This intentionally prefers a visible recovery requirement to duplicated or
+silently missing messages. It is not a claim of transactional exactly-once writes
+across two independent storage systems. Import recovery is bounded to 10,000
+completed-item events; very long mirrors need a future checkpoint implementation.
+
+`session.reset` starts fresh assembler IDs but **does not clear BB history**. The
+ledger prevents re-import on normal resume; a new mirror is never seeded by
+replaying the whole snapshot without checking it.
+
+## Deliberate preview semantics and limits
+
+- Refresh on explicit open/Refresh, not background continuous native streaming.
+  Native runtime status reflects importing/proposing, not the remote agent's run.
+- Current relay snapshots contain at most 100 recent messages, sometimes truncated.
+  This is an observed preview, not a full history import or a replica of an agent
+  session. Intermediate edits not observed at refresh are not recoverable.
+- Existing source messages edited later append **labelled new versions**, never
+  silently replace earlier local content. Missing items are not considered deleted
+  because a bounded window can legitimately omit them.
+- Imported bodies are fenced plain text to stop remote Markdown images, links,
+  plugin directives and executable fence renderers from activating locally.
+  Native owner messages are provider-observed (`initiator: system`); BB may show
+  them collapsed by default. Rendering and timestamps are BB's, not copied ids.
+- Each explicit refresh currently leaves a `/multiplayer-refresh` input row.
+- Native message IDs differ from remote message IDs. Use **Open source & discussions**
+  for anchored comments; mapping a local message action back to the remote anchor
+  is not implemented yet. The floating widget can still show thread discussions.
+- Attachments/mentions are rejected, not uploaded/resolved. Only human text can
+  create proposals; automated agent-origin sends are refused. `/multiplayer-refresh`
+  is a control command, never a proposal. A stable derived request UUID deduplicates
+  proposal retries.
+- Disconnect/disable blocks all existing mirrors and stops their runtime. No new
+  remote data is fetched without membership checks. Revocation prevents future
+  refresh/proposals; already imported native text remains in the local BB history.
+- No destructive history purge, live withdrawal signal, mirror mapping repair UI,
+  restore-after-disable workflow or automatic workspace cleanup yet. Empty plugin
+  workspace directories are retained, not silently deleted. The generic BB terminal
+  is still a local user capability; the provider never invokes it or exposes a
+  teammate's terminal.
+
+## Verification completed
+
+- Official public bridge conformance: handshake, hygiene, start/stop/release,
+  resume, turn lifecycle, native event schemas, presentation and zero-work turns.
+- Unit/integration checks: per-member mapping, concurrent double-open, pending
+  batch recovery, partial import fail-closed, actual event-page cap, source edits,
+  remote Markdown quoting, attachment/provider-switch/fork/republish rejection,
+  disconnect blocking and proposal idempotency.
+- Actual BB runtime smoke under a **separate temporary plugin ID**, with a loopback
+  in-memory synthetic relay: native provider thread created, user and assistant
+  rows persisted and visible through native timeline; failed confirmation recovered
+  without duplication, then stop/resume confirmed one copy of each source message.
+  Agent-origin proposal attempt was refused as intended. No model ran and no real
+  team content or credentials were used. Smoke thread was stopped/archived and the
+  temporary plugin and relay were removed/stopped afterward.
+
+Still required before broad enablement: two-machine real-user composer proposal
+and owner-review verification, revocation while an import is in flight, long-history
+load testing, and a less noisy refresh UI. It is off by default on a new install;
+the operator can enable it with `bb plugin config multiplayer set nativeMirrors true`.

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from "vitest";
-import { cleanup, fireEvent } from "@testing-library/react";
+import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import type { PluginSidebarThread } from "@get-bb/plugin-sdk/app";
 import { TeamThreadList } from "../components/team-thread-list";
@@ -309,6 +309,31 @@ it("changes the project chevron when collapsing and expanding only that project'
   ).toBeTruthy();
   expect(onNavigate).not.toHaveBeenCalled();
   expect(slot.inspection.navigateCalls).toEqual([]);
+});
+it("exposes project actions in the thread list without collapsing or navigating on right-click", async () => {
+  const onNavigate = vi.fn();
+  const slot = renderSlot(
+    { component: TeamThreadList },
+    { ...props, onNavigate },
+    { sidebarThreads: sidebar, rpc: { teamThreads: team } },
+  );
+  const project = await slot.findByRole("button", { name: "Project A · Team" });
+  fireEvent.contextMenu(project, { button: 2, clientX: 80, clientY: 100 });
+  const menu = await slot.findByRole("menu", { name: "Project A actions" });
+  expect(
+    within(menu)
+      .getByRole("menuitem", { name: "Project settings" })
+      .getAttribute("href"),
+  ).toBe("/projects/proj_a/settings");
+  expect(project.getAttribute("aria-expanded")).toBe("true");
+  fireEvent.keyDown(menu, { key: "Escape" });
+  await waitFor(() => expect(slot.queryByRole("menu")).toBeNull());
+  expect(slot.getByRole("link", { name: "Local task" })).toBeTruthy();
+  expect(
+    slot.getByRole("button", { name: "Actions for project Project A" }),
+  ).toBeTruthy();
+  expect(slot.inspection.sdkCalls).toEqual([]);
+  expect(onNavigate).not.toHaveBeenCalled();
 });
 it.each([false, true])(
   "groups children beneath their parents with increasing indentation (archived: %s)",
