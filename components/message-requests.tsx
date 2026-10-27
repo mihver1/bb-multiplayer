@@ -7,13 +7,18 @@ import { Button } from "./ui/button";
 
 export function MessageRequestComposer({
   sharedId,
+  projectId,
   ownerName,
 }: {
   sharedId: string;
+  projectId: string;
   ownerName: string;
 }) {
   const rpc = useRpc<typeof rpcContract>();
-  const load = useCallback(() => rpc.call("requestState"), [rpc]);
+  const load = useCallback(
+    () => rpc.call("requestState", { projectId }),
+    [rpc, projectId],
+  );
   const { data, refresh } = useTeamQuery(load);
   const [body, setBody] = useState(""),
     [pending, setPending] = useState(false),
@@ -52,6 +57,7 @@ export function MessageRequestComposer({
             attempt.current = { body: text, id: crypto.randomUUID() };
           void rpc
             .call("proposeMessage", {
+              projectId,
               id: attempt.current.id,
               threadId: sharedId,
               body: text,
@@ -117,23 +123,18 @@ export function MessageRequestComposer({
 export function OwnerRequestInbox() {
   const rpc = useRpc<typeof rpcContract>(),
     navigate = useBbNavigate();
-  const load = useCallback(() => rpc.call("requestState"), [rpc]);
+  const load = useCallback(() => rpc.call("requestInbox"), [rpc]);
   const { data } = useTeamQuery(load);
   const seen = useRef(new Set<string>());
   const initial = useRef(false);
-  const account = useRef<string | null>(null);
   useEffect(() => {
     if (!data) return;
-    if (account.current !== data.memberId) {
-      account.current = data.memberId;
-      seen.current.clear();
-      initial.current = false;
-    }
-    const pending = data.requests.filter(
-      (r) => r.ownerId === data.memberId && r.status === "pending",
-    );
-    const fresh = pending.filter((r) => !seen.current.has(r.id));
-    pending.forEach((r) => seen.current.add(r.id));
+    const pending = data.requests.map((r) => ({
+      ...r,
+      key: `${r.projectId}:${r.memberId}:${r.id}`,
+    }));
+    const fresh = pending.filter((r) => !seen.current.has(r.key));
+    seen.current = new Set(pending.map((r) => r.key));
     if (!initial.current) {
       initial.current = true;
       if (fresh.length)
@@ -143,9 +144,7 @@ export function OwnerRequestInbox() {
       return;
     }
     for (const r of fresh) {
-      const author =
-        data.members.find((m) => m.id === r.authorId)?.name ?? "A teammate";
-      toast.info(`${author} proposes a message in ${r.threadTitle}`, {
+      toast.info(`${r.authorName} proposes a message in ${r.threadTitle}`, {
         action: r.localThreadId
           ? {
               label: "Review",
@@ -167,7 +166,10 @@ export function OwnerRequestBanner() {
 function ThreadRequests({ threadId }: { threadId: string }) {
   const rpc = useRpc<typeof rpcContract>(),
     composer = useComposer();
-  const load = useCallback(() => rpc.call("requestState"), [rpc]);
+  const load = useCallback(
+    () => rpc.call("requestState", { threadId }),
+    [rpc, threadId],
+  );
   const { data, refresh } = useTeamQuery(load);
   const [pending, setPending] = useState(false),
     [error, setError] = useState<string | null>(null);
@@ -215,6 +217,7 @@ function ThreadRequests({ threadId }: { threadId: string }) {
                     if (status === "drafted" && !inserted.current.has(r.id)) {
                       const result = await rpc.call("requestDraft", {
                         id: r.id,
+                        projectId: data!.projectId!,
                       });
                       if (
                         result.threadId !== threadId ||
@@ -229,6 +232,7 @@ function ThreadRequests({ threadId }: { threadId: string }) {
                       composer.focus();
                     }
                     await rpc.call("reviewRequest", {
+                      projectId: data!.projectId!,
                       id: r.id,
                       version: r.version,
                       status: status as "drafted" | "dismissed",

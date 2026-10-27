@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
+import { randomUUID } from "node:crypto";
 import {
   createFakePluginHost,
   makeThreadResponse,
@@ -326,6 +327,108 @@ describe("native mirror server boundary", () => {
       kind: "committed",
     });
   });
+  it.each(["disconnect", "revoke"])(
+    "routes mirrors by project and isolates %s from another room",
+    async (action) => {
+      const otherOwner = relay.authenticate(
+        relay.createRoom("Other project", "Carol").token,
+      );
+      const { ownerId: _, updatedAt: __, ...snapshot } = fixtureSnapshot();
+      const otherSnapshot = {
+        ...snapshot,
+        id: randomUUID(),
+        title: "Other room thread",
+      };
+      relay.publish(otherOwner, otherSnapshot);
+      const otherToken = relay.join(
+        relay.invite(otherOwner).code,
+        "Other member",
+      ).token;
+      const otherLocal = makeThreadResponse({
+        ...local,
+        id: "thr_mirror_c",
+        projectId: "proj_c",
+      });
+      host.harness.inspection.sdk.stub("threads.get", async ({ threadId }) =>
+        threadId === otherLocal.id ? otherLocal : local,
+      );
+      host.harness.inspection.sdk.stub(
+        "threads.spawn",
+        async ({ projectId }) => (projectId === "proj_c" ? otherLocal : local),
+      );
+      await open();
+      await host.harness.behavior.callRpc("connect", {
+        url,
+        projectId: "proj_c",
+        token: otherToken,
+      });
+      await host.harness.behavior.callRpc("openNativeMirror", {
+        projectId: "proj_c",
+        sharedId: otherSnapshot.id,
+        hostId: "host_local",
+      });
+      const options = rpcContract.nativeMirrorOptions.output.parse(
+        await host.harness.behavior.callRpc("nativeMirrorOptions", {
+          projectId: "proj_c",
+        }),
+      );
+      expect(options.mirrors.map((m) => m.localId)).toEqual([otherLocal.id]);
+      const proposal = {
+        op: "propose",
+        clientRequestId: "same_client_request",
+        body: "Scoped proposal",
+      };
+      await operation(proposal);
+      await host.harness.behavior.callAgentTool(MIRROR_TOOL, proposal, {
+        threadId: otherLocal.id,
+        projectId: "proj_c",
+      });
+      const a = rpcContract.requestState.output.parse(
+        await host.harness.behavior.callRpc("requestState", {
+          projectId: "proj_b",
+        }),
+      );
+      const b = rpcContract.requestState.output.parse(
+        await host.harness.behavior.callRpc("requestState", {
+          projectId: "proj_c",
+        }),
+      );
+      expect(a.requests.map((r) => r.threadId)).toEqual([snapshot.id]);
+      expect(b.requests.map((r) => r.threadId)).toEqual([otherSnapshot.id]);
+      if (action === "disconnect")
+        await host.harness.behavior.callRpc("disconnect", {
+          projectId: "proj_c",
+        });
+      else {
+        relay.revoke(otherOwner, relay.authenticate(otherToken).id);
+        await expect(host.harness.behavior.callRpc("sync")).rejects.toThrow(
+          "revoked",
+        );
+      }
+      expect(host.harness.inspection.sdk.callsTo("threads.stop")).toHaveLength(
+        1,
+      );
+      expect(
+        JSON.stringify(host.harness.inspection.sdk.callsTo("threads.stop")),
+      ).toContain(otherLocal.id);
+      expect((await operation({ op: "read" })).kind).toBe("batch");
+      await expect(
+        host.harness.behavior.callAgentTool(
+          MIRROR_TOOL,
+          { op: "read" },
+          { threadId: otherLocal.id, projectId: "proj_c" },
+        ),
+      ).rejects.toThrow("not mapped");
+      const state = rpcContract.nativeMirrorState.output.parse(
+        await host.harness.behavior.callRpc("nativeMirrorState", {
+          threadId: local.id,
+        }),
+      );
+      expect(state.projectId).toBe("proj_b");
+      expect(state.connected).toBe(true);
+    },
+  );
+
   it("does not create another mirror after an ambiguous spawn failure", async () => {
     host.harness.inspection.sdk.stub("threads.spawn", async () => {
       throw new Error("Lost spawn acknowledgement");

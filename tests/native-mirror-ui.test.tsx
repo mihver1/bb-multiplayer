@@ -11,7 +11,7 @@ afterEach(cleanup);
 it("requires explicit enablement and machine selection before creating a native view", async () => {
   const slot = renderSlot(
     { component: OpenNativeMirror },
-    { sharedId: "shared" },
+    { sharedId: "shared", projectId: "proj_b" },
     {
       rpc: {
         nativeMirrorOptions: () => ({ enabled: true, mirrors: [] }),
@@ -45,12 +45,12 @@ it("requires explicit enablement and machine selection before creating a native 
   expect(
     slot.inspection.rpcCalls.find((c) => c.method === "openNativeMirror")
       ?.input,
-  ).toEqual({ sharedId: "shared", hostId: "host_b" });
+  ).toEqual({ sharedId: "shared", hostId: "host_b", projectId: "proj_b" });
 });
 it("refreshes an existing mirror rather than duplicating it", async () => {
   const slot = renderSlot(
     { component: OpenNativeMirror },
-    { sharedId: "shared" },
+    { sharedId: "shared", projectId: "proj_b" },
     {
       rpc: {
         nativeMirrorOptions: () => ({
@@ -73,7 +73,7 @@ it("refreshes an existing mirror rather than duplicating it", async () => {
 it("does not activate a mirror when the feature is disabled", async () => {
   const slot = renderSlot(
     { component: OpenNativeMirror },
-    { sharedId: "shared" },
+    { sharedId: "shared", projectId: "proj_b" },
     { rpc: { nativeMirrorOptions: () => ({ enabled: false, mirrors: [] }) } },
   );
   await slot.findByText(/Native view is experimental/);
@@ -95,6 +95,7 @@ it("labels the native composer as an owner proposal and never sends from a banne
           isMirror: true,
           connected: true,
           sharedId: "shared",
+          projectId: "proj_b",
           localId: "thr_native",
           ownerName: "Alice",
         }),
@@ -111,4 +112,10 @@ it("labels the native composer as an owner proposal and never sends from a banne
   );
   expect(slot.inspection.composer.text).toBe("Keep draft");
   expect(slot.inspection.composer.submits).toEqual([]);
+  fireEvent.click(slot.getByText("Open source & discussions"));
+  expect(slot.inspection.navigateCalls.at(-1)).toEqual({
+    method: "toPluginPanel",
+    path: "team",
+    options: { subPath: "project/proj_b/thread/shared" },
+  });
 });

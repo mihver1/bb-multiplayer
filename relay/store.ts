@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import {
   ProtocolError,
+  name,
   snapshotSchema,
   threadSchema,
   commentSchema,
@@ -80,6 +81,14 @@ export class RelayStore {
     return this.db.transaction(() => {
       if (this.db.prepare("SELECT 1 FROM rooms LIMIT 1").get())
         fail(409, "Database already initialized");
+      return this.createRoom(roomName, ownerName);
+    })();
+  }
+  // Local operator only: room owners have no server-wide administration rights.
+  createRoom(roomName: string, ownerName: string) {
+    roomName = name.parse(roomName);
+    ownerName = name.parse(ownerName);
+    return this.db.transaction(() => {
       const roomId = randomUUID(),
         memberId = randomUUID(),
         token = secret();
@@ -89,6 +98,16 @@ export class RelayStore {
         .run(memberId, roomId, ownerName, digest(token), this.now());
       return { roomId, memberId, token };
     })();
+  }
+  listRooms(after = "") {
+    const rows = this.db
+      .prepare("SELECT id, name FROM rooms WHERE id > ? ORDER BY id LIMIT 51")
+      .all(after) as { id: string; name: string }[];
+    const rooms = rows.slice(0, 50);
+    return {
+      rooms,
+      nextCursor: rows.length > 50 ? rooms.at(-1)!.id : null,
+    };
   }
   authenticate(token: string): Actor {
     const actor = this.db

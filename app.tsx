@@ -128,11 +128,18 @@ function useAction() {
   return { busy, error, run };
 }
 
-function Connect({ status, refresh }: { status: Status; refresh: () => void }) {
+function Connect({
+  status,
+  refresh,
+  projectId,
+}: {
+  status: Status;
+  refresh: () => void;
+  projectId: string;
+}) {
   const rpc = useRpc<typeof rpcContract>(),
     action = useAction();
-  const [url, setUrl] = useState("http://127.0.0.1:4789"),
-    [projectId, setProjectId] = useState(status.projects[0]?.id ?? "");
+  const [url, setUrl] = useState("http://127.0.0.1:4789");
   const [mode, setMode] = useState<"invite" | "owner">("invite");
   const [credential, setCredential] = useState(""),
     [displayName, setDisplayName] = useState("");
@@ -182,14 +189,16 @@ function Connect({ status, refresh }: { status: Status; refresh: () => void }) {
           <select
             className="h-9 w-full rounded-md border border-border bg-background px-3"
             value={projectId}
-            onChange={(e) => setProjectId(e.target.value)}
+            disabled
             required
           >
-            {status.projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
+            {status.projects
+              .filter((p) => p.id === projectId)
+              .map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
           </select>
         </label>
         <div className="flex gap-2">
@@ -259,8 +268,9 @@ function Connect({ status, refresh }: { status: Status; refresh: () => void }) {
         </Button>
       </form>
       <Notice>
-        Starting a new team? Run the self-hosted relay's init command, then use
-        the owner's private credential file. See this plugin's README for setup.
+        Starting a new team? Use the relay's create-room command (or init for a
+        new server), then the owner's private credential file. Each local
+        project connects independently; other projects stay connected.
       </Notice>
     </div>
   );
@@ -268,8 +278,97 @@ function Connect({ status, refresh }: { status: Status; refresh: () => void }) {
 
 function TeamPage({ subPath }: { subPath: string }) {
   const rpc = useRpc<typeof rpcContract>(),
-    navigate = useBbNavigate();
+    navigate = useBbNavigate(),
+    context = useBbContext();
   const load = useCallback(() => rpc.call("status"), [rpc]);
+  const { data, error } = useLoad(load);
+  const route =
+    /^project\/([a-zA-Z0-9_-]+)(?:\/thread\/([a-f0-9-]{36}))?$/.exec(subPath);
+  const legacyThread = /^thread\/([a-f0-9-]{36})$/.exec(subPath)?.[1];
+  const [selection, setSelection] = useState<{
+    from: string;
+    projectId: string;
+  } | null>(null);
+  if (!data)
+    return (
+      <Notice error={Boolean(error)}>{error ?? "Loading Multiplayer…"}</Notice>
+    );
+  // Old saved links are only safe when a single connection identifies the room.
+  if (legacyThread && data.connections.length !== 1)
+    return (
+      <Notice>
+        Select the project and open its shared thread from the Multiplayer list.
+      </Notice>
+    );
+  const projectId =
+    (selection?.from === subPath ? selection.projectId : null) ??
+    route?.[1] ??
+    (legacyThread ? data.connections[0]?.projectId : null) ??
+    (data.projects.some((p) => p.id === context.projectId)
+      ? context.projectId
+      : null) ??
+    data.connections[0]?.projectId ??
+    data.projects[0]?.id;
+  if (!projectId)
+    return (
+      <Notice>Create a local project before connecting Multiplayer.</Notice>
+    );
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <label className="flex items-center gap-3 border-b border-border px-5 py-3 text-sm">
+        <span>Team project</span>
+        <select
+          aria-label="Team project"
+          className="h-9 min-w-0 rounded-md border border-border bg-background px-3"
+          value={projectId}
+          onChange={(e) => {
+            setSelection({ from: subPath, projectId: e.target.value });
+            navigate.toPluginPanel("team", {
+              subPath: `project/${e.target.value}`,
+            });
+          }}
+        >
+          {data.projects.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+              {data.connections.some((c) => c.projectId === p.id)
+                ? " · Connected"
+                : " · Not connected"}
+            </option>
+          ))}
+          {!data.projects.some((p) => p.id === projectId) && (
+            <option value={projectId}>Unavailable project</option>
+          )}
+        </select>
+      </label>
+      <div className="min-h-0 flex-1">
+        <ProjectTeamPage
+          key={projectId}
+          projectId={projectId}
+          selected={
+            selection?.from === subPath
+              ? undefined
+              : (route?.[2] ?? legacyThread)
+          }
+        />
+      </div>
+    </div>
+  );
+}
+
+function ProjectTeamPage({
+  projectId,
+  selected,
+}: {
+  projectId: string;
+  selected?: string;
+}) {
+  const rpc = useRpc<typeof rpcContract>(),
+    navigate = useBbNavigate();
+  const load = useCallback(
+    () => rpc.call("status", { projectId }),
+    [rpc, projectId],
+  );
   const { data, error, refresh } = useLoad(load),
     action = useAction();
   const [invitation, setInvitation] = useState<{
@@ -294,11 +393,10 @@ function TeamPage({ subPath }: { subPath: string }) {
   if (!data.connection || !data.identity)
     return (
       <div className="h-full overflow-y-auto px-5">
-        <Connect status={data} refresh={refresh} />
+        <Connect status={data} projectId={projectId} refresh={refresh} />
         {data.error && <Notice error>{data.error}</Notice>}
       </div>
     );
-  const selected = /^thread\/([a-f0-9-]{36})$/.exec(subPath)?.[1];
   if (selected)
     return (
       <div className="h-full overflow-y-auto p-4 md:p-5">
@@ -306,11 +404,20 @@ function TeamPage({ subPath }: { subPath: string }) {
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => navigate.toPluginPanel("team")}
+            onClick={() =>
+              navigate.toPluginPanel("team", {
+                subPath: `project/${projectId}`,
+              })
+            }
           >
             <Icon name="ArrowLeft" className="size-4" /> Team project
           </Button>
-          <ThreadDetail key={selected} id={selected} status={data} />
+          <ThreadDetail
+            key={`${projectId}:${selected}`}
+            projectId={projectId}
+            id={selected}
+            status={data}
+          />
         </div>
       </div>
     );
@@ -346,7 +453,7 @@ function TeamPage({ subPath }: { subPath: string }) {
               disabled={action.busy}
               onClick={() =>
                 void action.run(async () => {
-                  await rpc.call("sync");
+                  await rpc.call("sync", { projectId });
                   refresh();
                 })
               }
@@ -359,7 +466,7 @@ function TeamPage({ subPath }: { subPath: string }) {
                 disabled={action.busy}
                 onClick={() =>
                   void action.run(async () => {
-                    setInvitation(await rpc.call("invite"));
+                    setInvitation(await rpc.call("invite", { projectId }));
                     setCopied(false);
                   })
                 }
@@ -382,9 +489,9 @@ function TeamPage({ subPath }: { subPath: string }) {
         {confirmDisconnect && (
           <Notice>
             <p className="mb-3">
-              Disconnect stops future sharing and clears this BB's cache.
-              Already published content remains on the team server; it does not
-              revoke your credential.
+              Disconnect stops future sharing and clears this project's cache
+              only. Already published content remains on the team server; it
+              does not revoke your credential.
             </p>
             <Button
               variant="destructive"
@@ -392,7 +499,7 @@ function TeamPage({ subPath }: { subPath: string }) {
               disabled={action.busy}
               onClick={() =>
                 void action.run(async () => {
-                  await rpc.call("disconnect");
+                  await rpc.call("disconnect", { projectId });
                   setInvitation(null);
                   refresh();
                 })
@@ -494,7 +601,7 @@ function TeamPage({ subPath }: { subPath: string }) {
                 disabled={action.busy}
                 onClick={() =>
                   void action.run(async () => {
-                    await rpc.call("revoke", { memberId: revokeId });
+                    await rpc.call("revoke", { projectId, memberId: revokeId });
                     setRevokeId(null);
                     refresh();
                   })
@@ -541,7 +648,7 @@ function TeamPage({ subPath }: { subPath: string }) {
                     key={thread.id}
                     onClick={() =>
                       navigate.toPluginPanel("team", {
-                        subPath: `thread/${thread.id}`,
+                        subPath: `project/${projectId}/thread/${thread.id}`,
                       })
                     }
                     className="flex w-full items-center gap-4 bg-card p-4 text-left hover:bg-muted focus-visible:outline focus-visible:outline-2"
@@ -590,6 +697,7 @@ function TeamPage({ subPath }: { subPath: string }) {
 
 function ThreadDetail({
   id,
+  projectId,
   status,
   localThreadId,
   initialMessageId,
@@ -599,6 +707,7 @@ function ThreadDetail({
   discussionTarget,
 }: {
   id: string;
+  projectId: string;
   status: Pick<Status, "identity" | "online">;
   localThreadId?: string;
   initialMessageId?: string;
@@ -610,7 +719,10 @@ function ThreadDetail({
   const rpc = useRpc<typeof rpcContract>(),
     navigate = useBbNavigate(),
     action = useAction();
-  const load = useCallback(() => rpc.call("thread", { id }), [rpc, id]);
+  const load = useCallback(
+    () => rpc.call("thread", { id, projectId }),
+    [rpc, id, projectId],
+  );
   const { data, error, refresh } = useLoad(load);
   const [selected, setSelected] = useState<string[]>([]),
     [body, setBody] = useState("");
@@ -689,7 +801,7 @@ function ThreadDetail({
       if (attempt.current?.key !== key)
         attempt.current = { key, id: crypto.randomUUID() };
       const input: NewComment = { ...fields, id: attempt.current.id };
-      await rpc.call("addComment", input);
+      await rpc.call("addComment", { ...input, projectId });
       attempt.current = null;
       setBody("");
       setAnchor(null);
@@ -803,10 +915,15 @@ function ThreadDetail({
         identity &&
         data.thread.ownerId !== identity.member.id && (
           <div className="space-y-3">
-            <OpenNativeMirror key={`native-${id}`} sharedId={id} />
-            <MessageRequestComposer
-              key={id}
+            <OpenNativeMirror
+              key={`native-${projectId}-${id}`}
               sharedId={id}
+              projectId={projectId}
+            />
+            <MessageRequestComposer
+              key={`${projectId}:${id}`}
+              sharedId={id}
+              projectId={projectId}
               ownerName={author(data.thread.ownerId)}
             />
           </div>
@@ -895,6 +1012,7 @@ function ThreadDetail({
             onResolve={(root) =>
               void action.run(async () => {
                 await rpc.call("resolve", {
+                  projectId,
                   id: root.id,
                   version: root.version,
                   resolved: !root.resolved,
@@ -1130,7 +1248,11 @@ function FloatingThreadDiscussion({
             <Button
               size="sm"
               variant="outline"
-              onClick={() => navigate.toPluginPanel("team")}
+              onClick={() =>
+                navigate.toPluginPanel("team", {
+                  subPath: `project/${data.projectId}`,
+                })
+              }
             >
               Open Multiplayer setup
             </Button>
@@ -1190,7 +1312,8 @@ function FloatingThreadDiscussion({
             )}
             {data.sharedId && hasOpened && (
               <ThreadDetail
-                key={data.sharedId}
+                key={`${data.projectId}:${data.sharedId}`}
+                projectId={data.projectId}
                 id={data.sharedId}
                 status={status}
                 localThreadId={threadId}
@@ -1232,13 +1355,10 @@ function ThreadPanel({
     composer = useComposer(),
     action = useAction();
   const [consent, setConsent] = useState(false);
-  const load = useCallback(
-    async () => ({
-      status: await rpc.call("status"),
-      local: await rpc.call("localThread", { threadId }),
-    }),
-    [rpc, threadId],
-  );
+  const load = useCallback(async () => {
+    const local = await rpc.call("discussionContext", { threadId });
+    return { status: local, local };
+  }, [rpc, threadId]);
   const { data, error, refresh } = useLoad(load);
   if (!data)
     return <Notice error={Boolean(error)}>{error ?? "Loading…"}</Notice>;
@@ -1305,7 +1425,8 @@ function ThreadPanel({
       {action.error && <Notice error>{action.error}</Notice>}
       {local.sharedId && (
         <ThreadDetail
-          key={local.sharedId}
+          key={`${local.projectId}:${local.sharedId}`}
+          projectId={local.projectId}
           id={local.sharedId}
           status={status}
           localThreadId={threadId}

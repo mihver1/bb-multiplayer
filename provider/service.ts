@@ -4,6 +4,7 @@ import type {
 } from "@get-bb/plugin-sdk";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
+import type Database from "better-sqlite3";
 import type { LocalStore } from "../plugin/local-store";
 import type { RelayClient } from "../plugin/client";
 import { threadSchema } from "../shared/protocol";
@@ -30,16 +31,17 @@ type Connection = {
 };
 export function registerMirrors(
   bb: BbPluginApi,
-  store: LocalStore,
+  db: Database.Database,
   options: {
+    store: (projectId: string) => LocalStore;
     enabled: () => Promise<boolean>;
-    connection: () => Connection | null;
-    client: (signal?: AbortSignal) => Promise<RelayClient>;
+    connection: (projectId: string) => Connection | null;
+    client: (projectId: string, signal?: AbortSignal) => Promise<RelayClient>;
     signal: AbortSignal;
     changed: () => void;
   },
 ) {
-  const mirrors = new MirrorStore(store.db);
+  const mirrors = new MirrorStore(db);
   const host = bb.hosts.experimental_client({ contract: mirrorHostContract });
   let creation = Promise.resolve();
   const operations = new Map<string, Promise<unknown>>();
@@ -58,7 +60,7 @@ export function registerMirrors(
   }
   async function authorized(localId: string, signal = options.signal) {
     const mirror = mirrors.byLocal(localId),
-      conn = options.connection();
+      conn = mirror ? options.connection(mirror.projectId) : null;
     if (
       !(await options.enabled()) ||
       !mirror ||
@@ -186,7 +188,7 @@ export function registerMirrors(
         const signal = AbortSignal.any([ctx.signal, options.signal]);
         signal.throwIfAborted();
         const mirror = await authorized(ctx.threadId, signal);
-        const remote = await options.client(signal);
+        const remote = await options.client(mirror.projectId, signal);
         // Every read revalidates remote membership; no member credential ever
         // crosses the provider wire. A disconnected mirror cannot read stale cache.
         if (input.op === "propose") {
@@ -199,7 +201,7 @@ export function registerMirrors(
               body: input.body,
             },
           );
-          store.request(request);
+          options.store(mirror.projectId).request(request);
           options.changed();
           return JSON.stringify({
             kind: "proposed",
@@ -302,7 +304,7 @@ export function registerMirrors(
         message: "A native mirror cannot switch to an executable provider.",
       };
     mirror ??= bindCreation(ctx);
-    const conn = options.connection();
+    const conn = mirror ? options.connection(mirror.projectId) : null;
     if (
       !mirror ||
       mirror.state !== "ready" ||
@@ -341,19 +343,19 @@ export function registerMirrors(
       };
     return { action: "proceed" };
   });
-  async function open(sharedId: string, hostId: string) {
+  async function open(projectId: string, sharedId: string, hostId: string) {
     if (!(await options.enabled()))
       throw new Error(
         "Enable experimental native mirrors in Multiplayer settings first",
       );
-    const conn = options.connection();
+    const conn = options.connection(projectId);
     if (!conn) throw new Error("Connect Multiplayer first");
     const snapshot = await (
-      await options.client()
+      await options.client(projectId)
     ).call(`thread?id=${sharedId}`, threadSchema);
     if (snapshot.id !== sharedId)
       throw new Error("Relay returned a different shared thread");
-    const current = options.connection();
+    const current = options.connection(projectId);
     if (
       !current ||
       current.roomId !== conn.roomId ||
@@ -411,8 +413,8 @@ export function registerMirrors(
   }
   return {
     mirrors,
-    open(sharedId: string, hostId: string) {
-      const result = creation.then(() => open(sharedId, hostId));
+    open(projectId: string, sharedId: string, hostId: string) {
+      const result = creation.then(() => open(projectId, sharedId, hostId));
       creation = result.then(
         () => {},
         () => {},
@@ -434,9 +436,12 @@ export function registerMirrors(
         refreshInFlight.delete(localId);
       }
     },
-    async disconnect() {
-      mirrors.blockAll();
-      for (const mirror of mirrors.list())
+    async disconnect(projectId?: string) {
+      const affected = mirrors
+        .list()
+        .filter((m) => !projectId || m.projectId === projectId);
+      for (const mirror of affected) mirrors.block(mirror.id);
+      for (const mirror of affected)
         if (mirror.localId) {
           try {
             await bb.sdk.threads.stop({ threadId: mirror.localId });

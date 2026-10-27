@@ -1,12 +1,29 @@
 # Multiplayer for BB · Experimental
 
-**Independent BB installations. One shared project context.**
+**Independent BB installations. Shared project contexts, kept separate.**
 
 A working first slice of team collaboration: opt-in live conversation previews,
 contextual comments, replies, resolution, presence and deliberate handoff of
 feedback to the local agent's draft. No remote control of someone else's agent.
 
-## New in v0.3.0
+## New in v0.3.1: a room per local project
+
+One BB installation can now keep multiple projects connected at once, each to its
+own room on the same relay or on different relays. Select **Team project** on the
+Multiplayer page to connect or manage that project's room. The sidebar groups
+shared threads under their local projects; thread discussions use the thread's
+own project automatically.
+
+Connections, secret credentials, sharing links, caches, event cursors, presence
+and errors are project-scoped. Disconnecting or losing membership in one project
+does not clear another. Existing single-project plugin data and its secret are
+migrated automatically on first use; do not disconnect or rerun relay `init` to
+upgrade. Back up plugin storage and secret settings together before upgrading;
+the local SQLite migration is forward-only (an older plugin needs its matching
+backup). Existing v0.3.0 native mirrors and import ledgers are retained and mirror
+operations use their own project's connection. The relay wire protocol remains v1.
+
+## Introduced in v0.3.0
 
 - **Native thread view:** opt-in Multiplayer Mirror provider, no model or code
   execution. Open a teammate's shared view → **Open native view**, select a machine,
@@ -102,8 +119,9 @@ for setup, recovery semantics, safeguards, and remaining two-machine verificatio
   **message-bubble → arrow** glyph (**Add to agent draft**, available when that
   thread's composer is mounted). Icon controls have hover/focus tooltips. The
   prompt is editable; pressing Send is a separate human action. Remote comments do not dispatch messages, tools or agents.
-- **Self-hosted relay:** durable SQLite state, per-member credentials, one-use
-  invitations (24-hour expiry), owner/member roles and revocation.
+- **Self-hosted relay:** multiple isolated project rooms on one server and SQLite
+  database, per-room owner/member credentials, one-use invitations (24-hour expiry)
+  and revocation.
 - **Recovery:** persisted outbound snapshots, monotonic per-thread revisions,
   idempotent replay and a durable event cursor. One broken local thread does not
   prevent other threads or incoming comments from syncing.
@@ -120,7 +138,7 @@ for setup, recovery semantics, safeguards, and remaining two-machine verificatio
 Install the pinned release on another BB installation:
 
 ```sh
-bb plugin install git:https://github.com/mihver1/bb-multiplayer.git@v0.3.0
+bb plugin install git:https://github.com/mihver1/bb-multiplayer.git@v0.3.1
 ```
 
 If Multiplayer is already installed from a local path or a different tracked
@@ -149,7 +167,13 @@ bb plugin reload multiplayer
 
 There is no `bb multiplayer` command or automatically enabled agent tool in this
 version. Setup and collaboration use the UI; the public RPC contract is available
-through `bb plugin rpc` for diagnostics.
+through `bb plugin rpc` for diagnostics. `status` without input returns the
+connection inventory; use `{ "projectId": "proj_..." }` for one project's status,
+invite, disconnect or sync. Unscoped `sync` checks all projects; unscoped room
+mutations/read-detail calls are rejected when multiple connections exist. Remote
+thread/comment/request RPC inputs accept `projectId`; local thread actions derive
+it from the BB thread. New navigation links include `project/<id>/thread/<id>`;
+legacy `thread/<id>` links require a single unambiguous connection.
 
 ## Start a team server
 
@@ -174,8 +198,8 @@ Defaults:
 | `MULTIPLAYER_DATA_DIR`   | `.multiplayer` | SQLite database and initial private owner credential |
 | `MULTIPLAYER_HOST`       | `127.0.0.1`    | Bind address                                         |
 | `MULTIPLAYER_PORT`       | `4789`         | HTTP port                                            |
-| `MULTIPLAYER_ROOM_NAME`  | `Our project`  | Used only during init                                |
-| `MULTIPLAYER_OWNER_NAME` | `Owner`        | Used only during init                                |
+| `MULTIPLAYER_ROOM_NAME`  | `Our project`  | Name for `init` / `create-room`                       |
+| `MULTIPLAYER_OWNER_NAME` | `Owner`        | Owner name for `init` / `create-room`                  |
 
 Initialization writes `.multiplayer/owner-credential.json` with mode `0600`; it
 **never prints the credential**. The directory and credential files are ignored
@@ -194,6 +218,45 @@ HTTP token, or your local BB server to teammates. Configure proxy rate limits,
 a body limit of 8 MiB, timeouts, no Authorization/body logging, filesystem access
 controls and backups before deploying beyond a trusted pilot team. Run the relay
 under a service manager for persistent hosting; SIGINT/SIGTERM shut it down.
+
+### Multiple projects on one relay
+
+Each project is a separate **room** with its own owner, members, invitations,
+threads, comments and owner-request feed. All rooms use the **same relay origin**,
+process and SQLite database. The member credential (or invitation during joining)
+selects the room; clients cannot select another room by passing its ID.
+
+`init` remains a one-time bootstrap and still refuses an existing database.
+To provision another project, run this **locally on the relay host**, pointing at
+the same `MULTIPLAYER_DATA_DIR` used by the running service:
+
+```sh
+MULTIPLAYER_ROOM_NAME="Billing" MULTIPLAYER_OWNER_NAME="Bob" npm run relay:create-room
+npm run relay:list-rooms
+# For another page, pass the non-secret nextCursor returned by list-rooms:
+npm run relay:list-rooms -- <nextCursor>
+```
+
+- `create-room` can run while the relay is serving. It writes a new private
+  `owner-credential-<roomId>.json` (mode `0600`) in the data directory, without
+  printing the token or overwriting the original `owner-credential.json`.
+  If the credential file cannot be written, creation is rolled back.
+- Each invocation intentionally creates a new room and owner credential, even
+  if the display names match. Names are labels, not access-control identities.
+- `list-rooms` returns at most 50 room IDs/names and a nullable `nextCursor`.
+  It never returns member credentials. Room creation and the server-wide
+  inventory are **local operator commands**, not public HTTP endpoints; a room
+  owner has no administration rights over other rooms.
+- Give the new room's owner their credential privately. They connect using the
+  same server URL and invite only their own teammates. The 100-membership limit
+  and revocation apply independently to each room.
+
+Existing single-room databases need **no schema migration or reinitialization**:
+old credentials, invitations, history and cursors remain valid. Protocol v1 and
+existing clients are unchanged. The updated plugin supports **one room connection
+per local project**, with multiple projects connected simultaneously, including
+rooms on different relays. Older plugin releases still support only one connection
+per installation. No existing sharing is enabled.
 
 ### Connect the owner
 
@@ -236,7 +299,7 @@ If connection returns `HTTP 502 (HTML)` after changing DNS:
    Only its SHA-256 hash is stored by the relay. Treat the invitation as a bearer
    credential: whoever redeems it first becomes the member.
 
-Use a separate membership per BB installation in this prototype. Restoring a
+Use a separate membership per project connection and BB installation. Restoring a
 credential on another BB restores reading/commenting access, not ownership of
 local agent session processes or the original installation's sharing links.
 
@@ -268,12 +331,15 @@ Local BB + plugin ── outbound HTTPS ── shared relay ── outbound HTTP
    local agent / keys                    published context                 local agent / keys
 ```
 
-- One connection maps **one local project** to **one team room** per BB instance.
-  Membership, not a matching Git remote, grants access.
-- Local SQLite: connection metadata, sharing links, pending snapshots, cursor,
-  cached team threads/comments. Credential: BB secret settings, not SQLite or
-  frontend storage.
-- Relay SQLite: room, membership/token hashes, invitation hashes, current shared
+- Each local project maps to **one team room**, independently of other projects
+  in the same BB instance. A relay can host multiple rooms at the same URL; projects
+  can also use different relays. Credentials and invitations are room-specific;
+  membership, not a matching Git remote or room name, grants access.
+- Local SQLite: project-scoped connection metadata, sharing links, pending snapshots,
+  cursors and cached team threads/comments/requests. Credentials: a project-keyed
+  map in BB secret settings, never SQLite or frontend storage. Remote IDs are scoped
+  by local project so identical IDs from different relays cannot mix.
+- Relay SQLite: rooms, membership/token hashes, invitation hashes, current shared
   snapshots, comments and an append-only change-reference log. Every operation
   checks membership; only a thread's publishing member may update its snapshot.
 - A shared snapshot contains **title, status and a bounded preview of human and
@@ -287,11 +353,12 @@ Local BB + plugin ── outbound HTTPS ── shared relay ── outbound HTTP
   injection, so the owner must review it.
 - “Pause” stops future publication and discards pending unsent snapshots.
   **It does not retract data already received by the relay or teammates.**
-- “Disconnect” clears this installation's connection/cache/sharing links and
-  secret setting. It does not revoke the server credential or remove published
-  content. Reconnecting requires a saved credential or a new invitation.
-- Revocation blocks future authenticated requests and the plugin clears its cache
-  upon the next 401. Already downloaded data cannot be recalled, and an offline
+- “Disconnect” clears **only the selected project's** connection/cache/sharing
+  links and credential. Other projects keep syncing. It does not revoke the server
+  credential or remove published content. Reconnecting requires a saved credential
+  or a new invitation; sharing must be enabled again explicitly.
+- Revocation blocks future authenticated requests and the plugin clears only that
+  project's cache and connection upon the next 401. Already downloaded data cannot be recalled, and an offline
   or modified client can retain it.
 - The relay operator can read shared data. **No end-to-end encryption**, SSO, or
   third-party identity verification. Member names are self-chosen labels.
@@ -310,7 +377,7 @@ This is a pilot, not a production-hardened multi-tenant service.
 - Up to 100 recent messages/timeline segments per shared snapshot, 16,000
   characters per message; older context is not a complete mirrored history.
   The UI shows truncation. Hashes/quotes keep discussion anchors meaningful.
-- UI shows latest 200 shared threads and a preview of up to 200 comments per
+- UI shows latest 200 shared threads per connected project and a preview of up to 200 comments per
   thread. Recent replies reserve space for their root, so the preview never
   drops an available root while showing its replies. Missing roots during sync
   appear as explicit placeholder branches. Some older replies/branches can be
@@ -339,7 +406,13 @@ fake plugin hosts, including opt-in export, stable message IDs, contextual
 comments, safe draft-only handoff, access control, invitation expiry/reuse,
 revocation, replay after a lost acknowledgement, reload/cursor recovery, stale
 anchors, CAS resolution, bounded pagination, deleted/unavailable threads, shutdown
-cancellation and frontend registration/rendering. Live BB install/onboarding is
+cancellation and frontend registration/rendering. Multiproject tests cover real
+cross-room HTTP denials, isolated feeds and pagination, per-room membership limits,
+legacy database reopening, private credential creation/rollback, local CLI commands
+and simultaneous plugin connections to one or multiple origins. Plugin tests cover
+legacy migration and retry after secret-store failure, identical IDs across relays,
+project-scoped disconnect/revocation, moved local threads, UI selection and links.
+Live BB install/onboarding is
 checked separately; no real team conversation is shared during those checks.
 
 ## Source map
@@ -357,4 +430,5 @@ checked separately; no real team conversation is shared during those checks.
 - `plugin/` — relay client, local persistence, allowlisted message projection.
 - `shared/protocol.ts` — runtime-validated wire schemas.
 - `relay/` — standalone HTTP service, authentication and persistence.
+- `relay/admin.ts` — local-only room provisioning with private credential files.
 - `tests/` — protocol, two-BB integration and UI contract tests.

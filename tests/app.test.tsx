@@ -23,6 +23,10 @@ function status(): z.infer<typeof rpcContract.status.output> {
     revoked: false,
   };
   return {
+    projectId: "proj_a",
+    connections: [
+      { url: "http://127.0.0.1:4789", roomId, memberId, projectId: "proj_a" },
+    ],
     connection: {
       url: "http://127.0.0.1:4789",
       roomId,
@@ -84,7 +88,12 @@ describe("BB UI contracts", () => {
       { subPath: "" },
       {
         rpc: {
-          status: () => ({ ...status(), connection: null, identity: null }),
+          status: () => ({
+            ...status(),
+            connections: [],
+            connection: null,
+            identity: null,
+          }),
           connect: () => ({ ok: true }),
         },
       },
@@ -105,6 +114,193 @@ describe("BB UI contracts", () => {
     expect(slot.inspection.navigateCalls).toEqual([]);
     slot.lifecycle.unmount();
   });
+  it("switches project rooms and scopes every administrative action to the selection", async () => {
+    const app = await loadPluginApp(() => import("../app"));
+    const base = status();
+    const connections = [
+      base.connection!,
+      {
+        ...base.connection!,
+        projectId: "proj_b",
+        roomId: "55555555-5555-4555-8555-555555555555",
+      },
+    ];
+    const slot = renderSlot(
+      app.navPanels[0],
+      { subPath: "" },
+      {
+        context: { projectId: "proj_a", threadId: null },
+        rpc: {
+          status: (input) => {
+            const projectId =
+              (input as { projectId?: string } | null)?.projectId ?? "proj_a";
+            const connection =
+              connections.find((c) => c.projectId === projectId) ?? null;
+            return {
+              ...base,
+              projectId,
+              connection,
+              connections: [...connections],
+              projects: [
+                { id: "proj_a", name: "App" },
+                { id: "proj_b", name: "Billing" },
+              ],
+              identity: connection
+                ? {
+                    ...base.identity!,
+                    room: {
+                      id: connection.roomId,
+                      name: projectId === "proj_a" ? "Room A" : "Room B",
+                    },
+                  }
+                : null,
+            };
+          },
+          invite: () => ({
+            code: "test-invitation-only",
+            expiresAt: Date.now() + 1000,
+          }),
+          disconnect: (input) => {
+            connections.splice(
+              connections.findIndex(
+                (c) =>
+                  c.projectId === (input as { projectId: string }).projectId,
+              ),
+              1,
+            );
+            return { ok: true };
+          },
+        },
+      },
+    );
+    await slot.findByText("Room A");
+    fireEvent.click(slot.getByText("Invite teammate"));
+    await slot.findByLabelText("Invitation code");
+    fireEvent.change(slot.getByLabelText("Team project"), {
+      target: { value: "proj_b" },
+    });
+    await slot.findByText("Room B");
+    expect(slot.queryByLabelText("Invitation code")).toBeNull();
+    fireEvent.click(slot.getByText("Invite teammate"));
+    await slot.findByLabelText("Invitation code");
+    expect(
+      slot.inspection.rpcCalls
+        .filter((c) => c.method === "invite")
+        .map((c) => c.input),
+    ).toEqual([{ projectId: "proj_a" }, { projectId: "proj_b" }]);
+    fireEvent.click(slot.getByText("Disconnect"));
+    fireEvent.click(await slot.findByText("Disconnect and clear local cache"));
+    await slot.findByText("Connect project");
+    expect(
+      slot.inspection.rpcCalls.find((c) => c.method === "disconnect")?.input,
+    ).toEqual({ projectId: "proj_b" });
+    expect(connections.map((c) => c.projectId)).toEqual(["proj_a"]);
+    expect(
+      slot.queryByLabelText("Invitation code")?.getAttribute("value"),
+    ).not.toBe("test-invitation-only");
+  });
+
+  it("connects a second project from the selector without disconnecting the first", async () => {
+    const app = await loadPluginApp(() => import("../app"));
+    const base = status();
+    const slot = renderSlot(
+      app.navPanels[0],
+      { subPath: "project/proj_a" },
+      {
+        rpc: {
+          status: (input) => {
+            const selected = (input as { projectId?: string } | null)
+              ?.projectId;
+            return {
+              ...base,
+              projects: [
+                { id: "proj_a", name: "App" },
+                { id: "proj_b", name: "Billing" },
+              ],
+              ...(selected === "proj_b"
+                ? { projectId: "proj_b", connection: null, identity: null }
+                : {}),
+            };
+          },
+          connect: () => ({ ok: true }),
+        },
+      },
+    );
+    await slot.findByText("Team");
+    fireEvent.change(slot.getByLabelText("Team project"), {
+      target: { value: "proj_b" },
+    });
+    fireEvent.change(await slot.findByLabelText("Your name"), {
+      target: { value: "Billing teammate" },
+    });
+    fireEvent.change(slot.getByLabelText("Invitation code"), {
+      target: { value: "test-only-invitation" },
+    });
+    fireEvent.click(slot.getByText("Connect project"));
+    await waitFor(() =>
+      expect(slot.inspection.rpcCalls.some((c) => c.method === "connect")).toBe(
+        true,
+      ),
+    );
+    expect(
+      slot.inspection.rpcCalls.find((c) => c.method === "connect")?.input,
+    ).toMatchObject({ projectId: "proj_b", displayName: "Billing teammate" });
+    expect(
+      slot.inspection.rpcCalls.some((c) => c.method === "disconnect"),
+    ).toBe(false);
+  });
+
+  it("opens project-qualified remote links and refuses ambiguous legacy links", async () => {
+    const app = await loadPluginApp(() => import("../app"));
+    const base = status();
+    const multi = {
+      ...base,
+      connections: [
+        base.connection!,
+        { ...base.connection!, projectId: "proj_b" },
+      ],
+    };
+    const legacy = renderSlot(
+      app.navPanels[0],
+      { subPath: `thread/${threadId}` },
+      { rpc: { status: () => multi } },
+    );
+    await legacy.findByText(/Select the project and open/);
+    expect(legacy.inspection.rpcCalls.some((c) => c.method === "thread")).toBe(
+      false,
+    );
+    legacy.lifecycle.unmount();
+    const slot = renderSlot(
+      app.navPanels[0],
+      { subPath: `project/proj_b/thread/${threadId}` },
+      {
+        rpc: {
+          status: () => multi,
+          thread: () => ({
+            thread: {
+              id: threadId,
+              revision: 1,
+              title: "B scoped",
+              status: "idle",
+              ownerId: memberId,
+              updatedAt: 1,
+              historyTruncated: false,
+              messages: [],
+            },
+            comments: [],
+            commentsTruncated: false,
+            localId: null,
+            sharing: false,
+          }),
+        },
+      },
+    );
+    await slot.findByText("B scoped");
+    expect(
+      slot.inspection.rpcCalls.find((c) => c.method === "thread")?.input,
+    ).toEqual({ id: threadId, projectId: "proj_b" });
+  });
+
   it("adds selected feedback to the local composer without submitting it", async () => {
     const app = await loadPluginApp(() => import("../app"));
     const slot = renderSlot(
@@ -114,7 +310,11 @@ describe("BB UI contracts", () => {
         context: { threadId: "thr_a", projectId: "proj_a" },
         rpc: {
           status,
-          localThread: () => ({
+          discussionContext: () => ({
+            ...status(),
+            threadTitle: "Local shared plan",
+            commentCount: 1,
+            openCount: 1,
             sharedId: threadId,
             sharing: true,
             connectedProject: true,

@@ -47,6 +47,15 @@ the plugin origin, dedicated environment ID, UUID and selected host agree. A los
 creation acknowledgement does not create a second local thread. An unbound
 ambiguous reservation fails closed and requires operator recovery.
 
+## Multiproject support in v0.3.1
+
+Native mirrors retain their original local project. Opening a mirror uses an
+explicit project connection; provider refresh/proposal calls derive it from the
+server-owned mapping. The source/discussion link includes that project ID.
+Disconnecting or revoking one project does not stop mirrors in another project.
+Existing v0.3.0 mappings, pending imports and version ledgers survive the local
+project-scoping migration; the shipped migration indices are unchanged.
+
 ## Persistence / reconnect contract
 
 The server prepares one batch of at most four source messages and durably records
@@ -92,7 +101,8 @@ replaying the whole snapshot without checking it.
   create proposals; automated agent-origin sends are refused. `/multiplayer-refresh`
   is a control command, never a proposal. A stable derived request UUID deduplicates
   proposal retries.
-- Disconnect/disable blocks all existing mirrors and stops their runtime. No new
+- Disconnect/revocation blocks only that project's mirrors; disabling the global
+  native-mirrors setting blocks all mirrors and stops their runtime. No new
   remote data is fetched without membership checks. Revocation prevents future
   refresh/proposals; already imported native text remains in the local BB history.
 - No destructive history purge, live withdrawal signal, mirror mapping repair UI,

@@ -28,6 +28,7 @@ function context(): z.infer<typeof rpcContract.discussionContext.output> {
   };
   return {
     threadTitle: "Migration thread",
+    projectId: "proj_a",
     connectedProject: true,
     sharedId,
     sharing: true,
@@ -474,7 +475,12 @@ describe("floating team discussion", () => {
     expect(slot.queryAllByRole("article")).toHaveLength(2);
     expect(
       slot.inspection.rpcCalls.find((c) => c.method === "resolve")?.input,
-    ).toEqual({ id: root.id, version: 1, resolved: false });
+    ).toEqual({
+      projectId: "proj_a",
+      id: root.id,
+      version: 1,
+      resolved: false,
+    });
   });
   it("keeps selected reply feedback visible inside a resolved branch", async () => {
     const root = { ...detail().comments[0], resolved: true };

@@ -9,11 +9,20 @@ import type { rpcContract } from "../server";
 import { useTeamQuery } from "../hooks/use-team-query";
 import { Button } from "./ui/button";
 
-export function OpenNativeMirror({ sharedId }: { sharedId: string }) {
+export function OpenNativeMirror({
+  sharedId,
+  projectId,
+}: {
+  sharedId: string;
+  projectId: string;
+}) {
   const rpc = useRpc<typeof rpcContract>(),
     sdk = useSdk(),
     navigate = useBbNavigate();
-  const load = useCallback(() => rpc.call("nativeMirrorOptions"), [rpc]);
+  const load = useCallback(
+    () => rpc.call("nativeMirrorOptions", { projectId }),
+    [rpc, projectId],
+  );
   const { data } = useTeamQuery(load);
   const [hosts, setHosts] = useState<{ id: string; name: string }[]>([]),
     [hostId, setHostId] = useState(""),
@@ -83,7 +92,7 @@ export function OpenNativeMirror({ sharedId }: { sharedId: string }) {
                 ? rpc
                     .call("refreshNativeMirror", { threadId: existing.localId })
                     .then(() => ({ threadId: existing.localId }))
-                : rpc.call("openNativeMirror", { sharedId, hostId })
+                : rpc.call("openNativeMirror", { sharedId, hostId, projectId })
             )
               .then(
                 (result) => {
@@ -166,9 +175,9 @@ function MirrorBanner({ threadId }: { threadId: string }) {
           size="sm"
           variant="ghost"
           onClick={() => {
-            if (data.sharedId)
+            if (data.sharedId && data.projectId)
               navigate.toPluginPanel("team", {
-                subPath: `thread/${data.sharedId}`,
+                subPath: `project/${data.projectId}/thread/${data.sharedId}`,
               });
           }}
         >

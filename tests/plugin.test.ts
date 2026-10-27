@@ -110,6 +110,49 @@ afterEach(async () => {
 });
 
 describe("two independent BB installations", () => {
+  it("keeps independent project connections isolated on the same relay origin", async () => {
+    const alice = makeClient("proj_a", "thr_a"),
+      bob = makeClient("proj_b", "thr_b");
+    const other = relay.createRoom("Other project", "Bob");
+    await rpc(alice, "connect", { url, projectId: "proj_a", token });
+    await rpc(bob, "connect", {
+      url,
+      projectId: "proj_b",
+      token: other.token,
+    });
+    const first = await rpc(alice, "share", {
+      threadId: "thr_a",
+      confirmed: true,
+    });
+    const second = await rpc(bob, "share", {
+      threadId: "thr_b",
+      confirmed: true,
+    });
+    for (const [host, ownId, otherId, roomId] of [
+      [
+        alice,
+        first.sharedId,
+        second.sharedId,
+        relay.authenticate(token).roomId,
+      ],
+      [bob, second.sharedId, first.sharedId, other.roomId],
+    ] as const) {
+      await rpc(host, "sync");
+      const status = await rpc(host, "status");
+      expect(status.online).toBe(true);
+      expect(status.identity?.room.id).toBe(roomId);
+      expect(status.identity?.members).toHaveLength(1);
+      expect(status.threads.map((thread) => thread.id)).toEqual([ownId]);
+      await expect(rpc(host, "thread", { id: otherId })).rejects.toThrow();
+      expect((await rpc(host, "requestState")).requests).toEqual([]);
+      const reloaded = await host.harness.lifecycle.reload(plugin);
+      hosts.push(reloaded);
+      await rpc(reloaded, "sync");
+      expect(
+        (await rpc(reloaded, "status")).threads.map((thread) => thread.id),
+      ).toEqual([ownId]);
+    }
+  });
   it("shares only opted-in threads; teammate comments reach the owner without starting an agent", async () => {
     const alice = makeClient("proj_a", "thr_a"),
       bob = makeClient("proj_b", "thr_b");
@@ -497,8 +540,8 @@ describe("two independent BB installations", () => {
     });
     await rpc(bob, "sync");
     const state = await rpc(bob, "teamThreads");
-    expect(state.projectId).toBe("proj_b");
-    expect(state.threads[0].localId).toBeNull();
+    expect(state.projects[0].projectId).toBe("proj_b");
+    expect(state.projects[0].threads[0].localId).toBeNull();
     const request = await rpc(bob, "proposeMessage", {
       id: randomUUID(),
       threadId: sharedId,

@@ -62,6 +62,7 @@ export const mirrorModel = {
 };
 export const nativeMirrorStateSchema = z.object({
   enabled: z.boolean(),
+  projectId: id.nullable(),
   sharedId: uuid.nullable(),
   ownerName: z.string().nullable(),
   isMirror: z.boolean(),

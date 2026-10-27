@@ -10,6 +10,43 @@ for rollback. Version-specific deployment evidence belongs in the private
 `/opt/bb-multiplayer-playground/releases/v0.3.0` directory, not Git. No nginx or
 firewall changes are needed.
 
+## v0.3.1 multiproject relay
+
+The updated relay can host multiple project rooms on the existing origin and
+SQLite database. This section describes the new source capability, **not a claim
+that the live deployment below has been upgraded**. Build/deploy the updated image
+following the backup/update procedure below before using the new commands.
+Existing v1 clients and database files are compatible; do not rerun `init`.
+
+Provision a room locally on the relay host (no service restart or nginx change
+is needed after the updated image is running):
+
+```sh
+cd /opt/bb-multiplayer-playground/source
+C=deploy/relay/compose.yaml
+docker compose -f "$C" exec -T \
+  -e MULTIPLAYER_ROOM_NAME="Billing" -e MULTIPLAYER_OWNER_NAME="Bob" \
+  relay node --import tsx relay/main.ts create-room
+docker compose -f "$C" exec -T relay node --import tsx relay/main.ts list-rooms
+# Additional page, if nextCursor is non-null:
+docker compose -f "$C" exec -T relay node --import tsx relay/main.ts list-rooms <nextCursor>
+```
+
+The new private credential is `/data/owner-credential-<roomId>.json` in the
+container (`source/deploy/relay/data/owner-credential-<roomId>.json` on the host),
+mode `0600`. It is not printed. Download it privately for the intended owner;
+never paste the credential into logs or agent prompts. Original credentials and
+published history remain unchanged. Each call creates a new room, even if its
+name already exists. Failed credential-file writes roll back the room creation.
+
+All room owners use `https://multiplayer.selfhost.ru`, with separate credentials
+and invitations. Room owners cannot enumerate or administer other rooms through
+HTTP; creation and inventory require local operator access. `list-rooms` returns
+only IDs/names (up to 50 per page) and a nullable `nextCursor`. The updated BB plugin
+can keep one connection per local project simultaneously; choose **Team project**
+on the Multiplayer page. Older releases still support one connection per BB.
+Updating the relay alone does not update participants' plugins.
+
 ## Existing protocol / upgrade history
 
 The v0.2.0 relay adds owner message requests (additive SQLite tables and
@@ -17,7 +54,7 @@ The v0.2.0 relay adds owner message requests (additive SQLite tables and
 `/v1/request-events`). The image includes `shared/requests.ts`. Before deploying,
 back up SQLite consistently and recreate only the relay service. Old clients
 remain compatible because request events do not enter the v1 conversation feed.
-The release image is `bb-multiplayer-relay:0.3.0`; retain the previous image and
+The current release image is `bb-multiplayer-relay:0.3.1`; retain the previous image and
 source backup for rollback. Never rerun `init` or replace the existing data directory.
 
 ## Live deployment

@@ -59,7 +59,7 @@ function makeThread(
     ...overrides,
   };
 }
-const team = () => ({
+const projectTeam = () => ({
   projectId: "proj_a",
   online: false,
   identity: null,
@@ -78,6 +78,7 @@ const team = () => ({
     },
   ],
 });
+const team = () => ({ projects: [projectTeam()] });
 const props = {
   activeThreadId: "thr_local",
   activeProjectId: "proj_a",
@@ -123,7 +124,7 @@ it("shows local + remote rows in the connected project, native local navigation 
   expect(slot.inspection.navigateCalls[0]).toEqual({
     method: "toPluginPanel",
     path: "team",
-    options: { subPath: `thread/${shared}` },
+    options: { subPath: `project/proj_a/thread/${shared}` },
   });
   const anchor = slot.container.querySelector(
     "[data-sidebar-thread-id=thr_local]",
@@ -135,13 +136,57 @@ it("shows local + remote rows in the connected project, native local navigation 
   });
   expect(props.onNavigate).toHaveBeenCalled();
 });
+it("groups multiple rooms and identical remote IDs under their own local projects", async () => {
+  const slot = renderSlot({ component: TeamThreadList }, props, {
+    sidebarThreads: sidebar,
+    rpc: {
+      teamThreads: () => ({
+        projects: [
+          projectTeam(),
+          {
+            ...projectTeam(),
+            projectId: "proj_b",
+            threads: projectTeam().threads.map((t) => ({
+              ...t,
+              title: "Remote B",
+            })),
+          },
+        ],
+      }),
+    },
+  });
+  const first = await slot.findByRole("button", {
+    name: "Open shared thread Remote task",
+  });
+  const second = await slot.findByRole("button", {
+    name: "Open shared thread Remote B",
+  });
+  expect(first.closest("section")?.getAttribute("aria-label")).toBe(
+    "Project A",
+  );
+  expect(second.closest("section")?.getAttribute("aria-label")).toBe("Other");
+  fireEvent.click(second);
+  expect(slot.inspection.navigateCalls.at(-1)).toEqual({
+    method: "toPluginPanel",
+    path: "team",
+    options: { subPath: `project/proj_b/thread/${shared}` },
+  });
+});
+
 it("does not duplicate shared local threads or expose hidden local threads as remote", async () => {
   const slot = renderSlot({ component: TeamThreadList }, props, {
     sidebarThreads: { ...sidebar, threads: [{ ...local, isHidden: true }] },
     rpc: {
       teamThreads: () => ({
-        ...team(),
-        threads: team().threads.map((t) => ({ ...t, localId: "thr_local" })),
+        projects: [
+          {
+            ...projectTeam(),
+            threads: projectTeam().threads.map((t) => ({
+              ...t,
+              localId: "thr_local",
+            })),
+          },
+        ],
       }),
     },
   });
@@ -181,14 +226,18 @@ it("switches local and remote archive views with an icon-only action and preserv
     sidebarThreads: { ...sidebar, threads: [local, archivedLocal] },
     rpc: {
       teamThreads: () => ({
-        ...team(),
-        threads: [
-          ...team().threads,
+        projects: [
           {
-            ...team().threads[0],
-            id: "33333333-3333-4333-8333-333333333333",
-            title: "Archived remote task",
-            status: "archived",
+            ...projectTeam(),
+            threads: [
+              ...projectTeam().threads,
+              {
+                ...projectTeam().threads[0],
+                id: "33333333-3333-4333-8333-333333333333",
+                title: "Archived remote task",
+                status: "archived",
+              },
+            ],
           },
         ],
       }),
@@ -480,7 +529,9 @@ it("applies pagination after nesting so a newer child never precedes its parent"
         ),
       ],
     },
-    rpc: { teamThreads: () => ({ ...team(), threads: [] }) },
+    rpc: {
+      teamThreads: () => ({ projects: [{ ...projectTeam(), threads: [] }] }),
+    },
   });
   await slot.findByText("Project A · Team");
   const rows = () =>

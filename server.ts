@@ -38,15 +38,46 @@ const connectionSchema = z.object({
   memberId: uuid,
   roomId: uuid,
 });
+const projectScope = z.object({ projectId: id }).strict();
+const optionalScope = projectScope.nullable();
+const requestScope = z.union([
+  projectScope,
+  z.object({ threadId: id }).strict(),
+  z.null(),
+]);
 const { messages: _messagesSchema, ...summaryShape } = threadSchema.shape;
 const summarySchema = z
   .object(summaryShape)
   .extend({ localId: id.nullable(), sharing: z.boolean() });
+const teamSchema = z.object({
+  projectId: id,
+  online: z.boolean(),
+  identity: identitySchema.nullable(),
+  threads: z.array(summarySchema).max(200),
+  truncated: z.boolean(),
+});
+const requestsSchema = z.object({
+  projectId: id.nullable(),
+  supported: z.boolean(),
+  online: z.boolean(),
+  memberId: uuid.nullable(),
+  members: identitySchema.shape.members,
+  requests: z
+    .array(
+      messageRequestSchema.extend({
+        localThreadId: id.nullable(),
+        threadTitle: z.string(),
+      }),
+    )
+    .max(200),
+});
 export const rpcContract = defineRpcContract({
   status: {
-    input: z.null(),
+    input: optionalScope,
     output: z.object({
       connection: connectionSchema.nullable(),
+      connections: z.array(connectionSchema),
+      projectId: id.nullable(),
       identity: identitySchema.nullable(),
       projects: z.array(z.object({ id, name: z.string() })),
       threads: z.array(summarySchema).max(200),
@@ -58,16 +89,12 @@ export const rpcContract = defineRpcContract({
   },
   teamThreads: {
     input: z.null(),
-    output: z.object({
-      projectId: id.nullable(),
-      online: z.boolean(),
-      identity: identitySchema.nullable(),
-      threads: z.array(summarySchema).max(200),
-      truncated: z.boolean(),
-    }),
+    output: z.object({ projects: z.array(teamSchema) }),
   },
   openNativeMirror: {
-    input: z.object({ sharedId: uuid, hostId: id }).strict(),
+    input: z
+      .object({ sharedId: uuid, hostId: id, projectId: id.optional() })
+      .strict(),
     output: z.object({ threadId: id }),
   },
   refreshNativeMirror: {
@@ -79,7 +106,7 @@ export const rpcContract = defineRpcContract({
     output: nativeMirrorStateSchema,
   },
   nativeMirrorOptions: {
-    input: z.null(),
+    input: optionalScope,
     output: z.object({
       enabled: z.boolean(),
       mirrors: z
@@ -87,33 +114,37 @@ export const rpcContract = defineRpcContract({
         .max(200),
     }),
   },
-  requestState: {
+  requestInbox: {
     input: z.null(),
     output: z.object({
-      supported: z.boolean(),
-      online: z.boolean(),
-      memberId: uuid.nullable(),
-      members: identitySchema.shape.members,
       requests: z
         .array(
-          messageRequestSchema.extend({
-            localThreadId: id.nullable(),
+          z.object({
+            projectId: id,
+            memberId: uuid,
+            id: uuid,
+            authorName: z.string(),
             threadTitle: z.string(),
+            localThreadId: id.nullable(),
           }),
         )
         .max(200),
     }),
   },
+  requestState: {
+    input: requestScope,
+    output: requestsSchema,
+  },
   proposeMessage: {
-    input: newMessageRequestSchema,
+    input: newMessageRequestSchema.extend({ projectId: id.optional() }),
     output: messageRequestSchema,
   },
   requestDraft: {
-    input: z.object({ id: uuid }).strict(),
+    input: z.object({ id: uuid, projectId: id.optional() }).strict(),
     output: z.object({ threadId: id, text: z.string(), version: z.number() }),
   },
   reviewRequest: {
-    input: reviewMessageRequestSchema,
+    input: reviewMessageRequestSchema.extend({ projectId: id.optional() }),
     output: messageRequestSchema,
   },
   connect: {
@@ -128,13 +159,13 @@ export const rpcContract = defineRpcContract({
       .strict(),
     output: z.object({ ok: z.boolean() }),
   },
-  disconnect: { input: z.null(), output: z.object({ ok: z.boolean() }) },
-  invite: { input: z.null(), output: invitationSchema },
+  disconnect: { input: optionalScope, output: z.object({ ok: z.boolean() }) },
+  invite: { input: optionalScope, output: invitationSchema },
   revoke: {
-    input: z.object({ memberId: uuid }).strict(),
+    input: z.object({ memberId: uuid, projectId: id.optional() }).strict(),
     output: z.object({ ok: z.boolean() }),
   },
-  sync: { input: z.null(), output: z.object({ ok: z.boolean() }) },
+  sync: { input: optionalScope, output: z.object({ ok: z.boolean() }) },
   share: {
     input: z.object({ threadId: id, confirmed: z.literal(true) }).strict(),
     output: z.object({ sharedId: uuid }),
@@ -155,6 +186,7 @@ export const rpcContract = defineRpcContract({
     input: z.object({ threadId: id }).strict(),
     output: z.object({
       threadTitle: z.string(),
+      projectId: id,
       connectedProject: z.boolean(),
       sharedId: uuid.nullable(),
       sharing: z.boolean(),
@@ -166,7 +198,7 @@ export const rpcContract = defineRpcContract({
     }),
   },
   thread: {
-    input: z.object({ id: uuid }),
+    input: z.object({ id: uuid, projectId: id.optional() }).strict(),
     output: z.object({
       thread: threadSchema,
       comments: z.array(commentSchema).max(200),
@@ -175,11 +207,15 @@ export const rpcContract = defineRpcContract({
       sharing: z.boolean(),
     }),
   },
-  addComment: { input: newCommentSchema, output: commentSchema },
+  addComment: {
+    input: newCommentSchema.extend({ projectId: id.optional() }),
+    output: commentSchema,
+  },
   resolve: {
     input: z
       .object({
         id: uuid,
+        projectId: id.optional(),
         version: z.number().int().positive(),
         resolved: z.boolean(),
       })
@@ -198,7 +234,12 @@ export default function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({
     credential: {
       type: "string",
-      label: "Member credential (managed by Connect)",
+      label: "Legacy member credential (migrated automatically)",
+      secret: true,
+    },
+    credentials: {
+      type: "string",
+      label: "Project credentials (managed by Connect)",
       secret: true,
     },
     nativeMirrors: {
@@ -210,17 +251,92 @@ export default function plugin(bb: BbPluginApi) {
     },
   });
   const db = bb.storage.database();
-  bb.storage.migrate(db, [...LocalStore.migrations, ...mirrorMigrations]);
-  const store = new LocalStore(db);
+  // Preserve v0.3.0 mirror migration indices 6–8 before adding project scoping.
+  bb.storage.migrate(db, [
+    ...LocalStore.migrations.slice(0, 6),
+    ...mirrorMigrations,
+    ...LocalStore.migrations.slice(6),
+  ]);
+  const storeFor = (projectId: string) => new LocalStore(db, projectId);
+  const projectIds = () => LocalStore.projectIds(db);
+  const connection = (projectId: string) =>
+    storeFor(projectId).state("connection", connectionSchema);
+  const connections = () =>
+    projectIds().map((projectId) => connection(projectId)!);
+  const runtime = new Map<
+    string,
+    { online: boolean; lastSyncAt: number | null; error: string | null }
+  >();
+  function stateFor(projectId: string) {
+    let state = runtime.get(projectId);
+    if (!state) {
+      state = { online: false, lastSyncAt: null, error: null };
+      runtime.set(projectId, state);
+    }
+    return state;
+  }
+  function selectProject(projectId?: string) {
+    if (projectId) return projectId;
+    const ids = projectIds();
+    if (ids.length > 1) throw new Error("Select a project explicitly");
+    return ids[0] ?? "";
+  }
+  const credentialsSchema = z.record(id, credentialSchema.shape.token);
+  function parseCredentials(value: string | undefined) {
+    try {
+      return credentialsSchema.parse(JSON.parse(value ?? "{}"));
+    } catch {
+      throw new Error(
+        "Stored project credentials are invalid; check secret settings",
+      );
+    }
+  }
+  // Retryable migration: write the new secret map before removing the SQL marker.
+  // Credentials never enter SQLite, logs or an RPC result.
+  let migration: Promise<void> | null = null;
+  function ready(): Promise<void> {
+    return (migration ??= (async () => {
+      const marker = db
+        .prepare(
+          "SELECT value FROM local_meta WHERE key='legacyCredentialProject'",
+        )
+        .get() as { value: string } | undefined;
+      const values = await settings.get();
+      if (marker) {
+        const credentials = parseCredentials(values.credentials);
+        if (values.credential && !credentials[marker.value])
+          credentials[marker.value] = values.credential;
+        // Separate writes: the SDK does not promise a multi-key atomic update.
+        await settings.experimental_set({
+          credentials: JSON.stringify(credentials),
+        });
+        await settings.experimental_set({ credential: null });
+        db.prepare(
+          "DELETE FROM local_meta WHERE key='legacyCredentialProject'",
+        ).run();
+      } else if (values.credential) {
+        await settings.experimental_set({ credential: null });
+      }
+    })().catch((cause) => {
+      migration = null;
+      throw cause;
+    }));
+  }
+  async function saveCredential(projectId: string, token: string | null) {
+    const values = parseCredentials((await settings.get()).credentials);
+    if (token) values[projectId] = token;
+    else delete values[projectId];
+    await settings.experimental_set({
+      credentials: Object.keys(values).length ? JSON.stringify(values) : null,
+    });
+  }
   const lifetime = new AbortController();
-  let lastSyncAt: number | null = null,
-    online = false,
-    error: string | null = null;
   let tail = Promise.resolve();
   // All outbound mutations, snapshots and cursor commits share one writer.
   function serial<T>(fn: () => Promise<T>): Promise<T> {
-    const result = tail.then(() => {
+    const result = tail.then(async () => {
       lifetime.signal.throwIfAborted();
+      await ready();
       return fn();
     });
     tail = result.then(
@@ -230,10 +346,12 @@ export default function plugin(bb: BbPluginApi) {
     return result;
   }
   const changed = () => bb.realtime.publish("changed", null);
-  const connection = () => store.state("connection", connectionSchema);
-  async function client(signal = lifetime.signal) {
-    const conn = connection(),
-      { credential } = await settings.get();
+  async function client(projectId: string, signal = lifetime.signal) {
+    await ready();
+    const conn = connection(projectId),
+      credential = parseCredentials((await settings.get()).credentials)[
+        projectId
+      ];
     if (!conn || !credential)
       throw new Error("Connect a project in Multiplayer first");
     return new RelayClient(
@@ -242,7 +360,8 @@ export default function plugin(bb: BbPluginApi) {
       AbortSignal.any([signal, lifetime.signal]),
     );
   }
-  const native = registerMirrors(bb, store, {
+  const native = registerMirrors(bb, db, {
+    store: storeFor,
     enabled: async () => (await settings.get()).nativeMirrors,
     connection,
     client,
@@ -257,9 +376,9 @@ export default function plugin(bb: BbPluginApi) {
           bb.log.warn("Mirror shutdown incomplete; mappings are blocked"),
         );
   });
-  async function heartbeat(remote: RelayClient) {
+  async function heartbeat(projectId: string, remote: RelayClient) {
     const identity = await remote.call("me", identitySchema);
-    const conn = connection();
+    const conn = connection(projectId);
     if (
       !conn ||
       identity.room.id !== conn.roomId ||
@@ -269,19 +388,32 @@ export default function plugin(bb: BbPluginApi) {
         401,
         "Credential no longer matches this connection",
       );
-    store.cacheIdentity(identity);
+    storeFor(projectId).cacheIdentity(identity);
   }
-  async function syncOnce(signal = lifetime.signal) {
-    if (!connection()) return;
+  async function syncOnce(projectId: string, signal = lifetime.signal) {
+    if (!connection(projectId)) return;
+    const store = storeFor(projectId),
+      state = stateFor(projectId);
     try {
-      const conn = connection()!,
-        remote = await client(signal);
-      await heartbeat(remote);
+      const conn = connection(projectId)!,
+        remote = await client(projectId, signal);
+      await heartbeat(projectId, remote);
       let publicationFailed = false;
       for (const initial of store.links()) {
         if (!initial.enabled || native.mirrors.byLocal(initial.localId))
           continue;
         try {
+          if (!initial.terminal && (initial.payload || initial.dirty)) {
+            const local = await bb.sdk.threads.get({
+              threadId: initial.localId,
+            });
+            if (local.projectId !== projectId) {
+              store.pause(initial.localId);
+              throw new Error(
+                "Local thread moved out of the connected project",
+              );
+            }
+          }
           // A prepared payload survives lost acknowledgements and process restarts.
           if (initial.payload) {
             const payload = snapshotSchema.parse(JSON.parse(initial.payload));
@@ -294,9 +426,7 @@ export default function plugin(bb: BbPluginApi) {
           }
           if (!initial.terminal && store.link(initial.localId)?.dirty) {
             // Clear before the await: an event arriving during capture keeps the next pass dirty.
-            db.prepare("UPDATE links SET dirty=0 WHERE localId=?").run(
-              initial.localId,
-            );
+            store.clearDirty(initial.localId);
             try {
               const snapshot = await capture(
                 bb,
@@ -402,73 +532,140 @@ export default function plugin(bb: BbPluginApi) {
           store.set("requestsSupported", true);
         })();
         if (incoming.length)
-          bb.realtime.publish("message-requests", { ids: incoming });
+          bb.realtime.publish("message-requests", { projectId, ids: incoming });
       } catch (cause) {
         if (cause instanceof ProtocolError && cause.status === 401) throw cause;
         store.set("requestsSupported", false);
       }
-      lastSyncAt = Date.now();
-      online = true;
-      error = publicationFailed
+      state.lastSyncAt = Date.now();
+      state.online = true;
+      state.error = publicationFailed
         ? "Some local threads could not be published. Pending snapshots will retry; other team data continues syncing."
         : null;
       changed();
     } catch (cause) {
       if (lifetime.signal.aborted || signal.aborted) return;
-      online = false;
-      error =
+      state.online = false;
+      state.error =
         cause instanceof ProtocolError
           ? cause.message
           : "Sync failed. Check the relay connection and local thread availability; pending data will retry.";
       if (cause instanceof ProtocolError && cause.status === 401) {
-        await native.disconnect();
+        await native.disconnect(projectId);
         store.reset();
-        await settings.experimental_set({ credential: null });
-      }
-      changed();
+        try {
+          await saveCredential(projectId, null);
+        } finally {
+          changed();
+        }
+      } else changed();
       throw cause;
     }
   }
-  async function safeSync(signal = lifetime.signal) {
+  async function safeSync(projectId: string, signal = lifetime.signal) {
     try {
-      await syncOnce(signal);
+      await syncOnce(projectId, signal);
     } catch {
       /* Reported in status; next tick retries. */
     }
   }
 
+  function teamState(projectId: string, includeMirrors = false) {
+    const conn = connection(projectId);
+    const store = storeFor(projectId),
+      links = store.links();
+    const threads = store.threads().sort((a, b) => b.updatedAt - a.updatedAt);
+    return {
+      projectId,
+      online: stateFor(projectId).online,
+      identity: store.identity(),
+      truncated: threads.length > 200,
+      threads: threads.slice(0, 200).map(({ messages: _, ...thread }) => {
+        const link = links.find((l) => l.sharedId === thread.id);
+        return {
+          ...thread,
+          localId:
+            link?.localId ??
+            (includeMirrors && conn
+              ? (native.mirrors.find({ ...conn, sharedId: thread.id })
+                  ?.localId ?? null)
+              : null),
+          sharing: Boolean(link?.enabled),
+        };
+      }),
+    };
+  }
+  function requestState(projectId: string) {
+    const store = storeFor(projectId),
+      identity = store.identity(),
+      links = store.links();
+    return {
+      projectId: projectId || null,
+      supported: store.state("requestsSupported", z.boolean()) ?? false,
+      online: stateFor(projectId).online,
+      memberId: identity?.member.id ?? null,
+      members: identity?.members ?? [],
+      requests: store
+        .requests()
+        .sort(
+          (a, b) =>
+            Number(b.status === "pending") - Number(a.status === "pending") ||
+            b.createdAt - a.createdAt,
+        )
+        .slice(0, 200)
+        .map((request) => ({
+          ...request,
+          localThreadId:
+            links.find((l) => l.sharedId === request.threadId)?.localId ?? null,
+          threadTitle:
+            store.getThread(request.threadId)?.title ?? "Shared thread",
+        })),
+    };
+  }
   bb.rpc.register(rpcContract, {
-    openNativeMirror: ({ sharedId, hostId }) =>
-      serial(() => native.open(sharedId, hostId)),
+    openNativeMirror: ({ sharedId, hostId, projectId }) =>
+      serial(() => native.open(selectProject(projectId), sharedId, hostId)),
     refreshNativeMirror: async ({ threadId }) => {
       await native.refresh(threadId);
       return { ok: true };
     },
-    nativeMirrorOptions: async () => ({
-      enabled: (await settings.get()).nativeMirrors,
-      mirrors: native.mirrors
-        .list()
-        .filter(
-          (m) =>
-            m.localId &&
-            m.roomId === connection()?.roomId &&
-            m.memberId === connection()?.memberId &&
-            m.projectId === connection()?.projectId,
-        )
-        .slice(0, 200)
-        .map((m) => ({
-          localId: m.localId!,
-          sharedId: m.sharedId,
-          active: m.state === "ready",
-        })),
-    }),
+    nativeMirrorOptions: async (input) => {
+      const projectId = selectProject(input?.projectId),
+        conn = connection(projectId);
+      return {
+        enabled: (await settings.get()).nativeMirrors,
+        mirrors: native.mirrors
+          .list()
+          .filter(
+            (m) =>
+              m.localId &&
+              m.roomId === conn?.roomId &&
+              m.memberId === conn?.memberId &&
+              m.projectId === projectId,
+          )
+          .slice(0, 200)
+          .map((m) => ({
+            localId: m.localId!,
+            sharedId: m.sharedId,
+            active: m.state === "ready",
+          })),
+      };
+    },
     nativeMirrorState: async ({ threadId }) => {
       const mirror = native.mirrors.byLocal(threadId),
-        conn = connection();
-      const remote = mirror ? store.getThread(mirror.sharedId) : null;
+        projectId = mirror?.projectId ?? "",
+        conn = connection(projectId),
+        store = storeFor(projectId);
+      const remote =
+        mirror &&
+        mirror.roomId === conn?.roomId &&
+        mirror.memberId === conn.memberId
+          ? store.getThread(mirror.sharedId)
+          : null;
       return {
         enabled: (await settings.get()).nativeMirrors,
         isMirror: Boolean(mirror),
+        projectId: mirror?.projectId ?? null,
         sharedId: mirror?.sharedId ?? null,
         localId: mirror?.localId ?? null,
         ownerName: remote
@@ -481,110 +678,98 @@ export default function plugin(bb: BbPluginApi) {
           conn &&
           mirror.roomId === conn.roomId &&
           mirror.memberId === conn.memberId &&
-          online,
+          stateFor(projectId).online,
         ),
       };
     },
-    status: async () => {
+    status: async (input) => {
+      await ready();
       const projects = await bb.sdk.projects.list();
-      const links = store.links(),
-        all = store.threads().sort((a, b) => b.updatedAt - a.updatedAt);
+      // An unscoped overview never silently selects one of several accounts.
+      const projectId =
+        input?.projectId ?? (projectIds().length === 1 ? projectIds()[0] : "");
+      const team = teamState(projectId);
       return {
-        connection: connection(),
-        identity: store.identity(),
+        projectId: projectId || null,
+        connections: connections(),
+        connection: connection(projectId),
+        identity: team.identity,
         projects: projects.map((p) => ({ id: p.id, name: p.name })),
-        threads: all.slice(0, 200).map(({ messages: _, ...thread }) => {
-          const link = links.find((l) => l.sharedId === thread.id);
-          return {
-            ...thread,
-            localId: link?.localId ?? null,
-            sharing: Boolean(link?.enabled),
-          };
-        }),
-        threadsTruncated: all.length > 200,
-        online,
-        lastSyncAt,
-        error,
+        threads: team.threads,
+        threadsTruncated: team.truncated,
+        ...stateFor(projectId),
       };
     },
     teamThreads: async () => {
-      const conn = connection(),
-        links = store.links(),
-        threads = store.threads().sort((a, b) => b.updatedAt - a.updatedAt);
+      await ready();
       return {
-        projectId: conn?.projectId ?? null,
-        online,
-        identity: store.identity(),
-        truncated: threads.length > 200,
-        threads: threads.slice(0, 200).map(({ messages: _, ...thread }) => ({
-          ...thread,
-          localId:
-            links.find((l) => l.sharedId === thread.id)?.localId ??
-            (conn
-              ? (native.mirrors.find({
-                  roomId: conn.roomId,
-                  memberId: conn.memberId,
-                  projectId: conn.projectId,
-                  sharedId: thread.id,
-                })?.localId ?? null)
-              : null),
-          sharing: Boolean(
-            links.find((l) => l.sharedId === thread.id)?.enabled,
-          ),
-        })),
+        projects: projectIds().map((projectId) => teamState(projectId, true)),
       };
     },
-    requestState: async () => {
-      const identity = store.identity(),
-        links = store.links();
-      return {
-        supported: store.state("requestsSupported", z.boolean()) ?? false,
-        online,
-        memberId: identity?.member.id ?? null,
-        members: identity?.members ?? [],
-        requests: store
-          .requests()
-          .sort(
-            (a, b) =>
-              Number(b.status === "pending") - Number(a.status === "pending") ||
-              b.createdAt - a.createdAt,
-          )
-          .slice(0, 200)
-          .map((request) => ({
-            ...request,
-            localThreadId:
-              links.find((l) => l.sharedId === request.threadId)?.localId ??
-              null,
-            threadTitle:
-              store.getThread(request.threadId)?.title ?? "Shared thread",
-          })),
-      };
+    requestInbox: async () => {
+      await ready();
+      // Notifications need only bounded summaries, not every project's full bodies.
+      const requests = projectIds()
+        .flatMap((projectId) => {
+          const state = requestState(projectId);
+          return state.requests
+            .filter(
+              (r) => r.ownerId === state.memberId && r.status === "pending",
+            )
+            .map((r) => ({
+              projectId,
+              memberId: state.memberId!,
+              id: r.id,
+              authorName:
+                state.members.find((m) => m.id === r.authorId)?.name ??
+                "A teammate",
+              threadTitle: r.threadTitle,
+              localThreadId: r.localThreadId,
+              createdAt: r.createdAt,
+            }));
+        })
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .slice(0, 200)
+        .map(({ createdAt: _, ...summary }) => summary);
+      return { requests };
     },
-    proposeMessage: (input) =>
+    requestState: async (input) => {
+      await ready();
+      const projectId =
+        input && "threadId" in input
+          ? (await bb.sdk.threads.get({ threadId: input.threadId })).projectId
+          : selectProject(input?.projectId);
+      return requestState(projectId);
+    },
+    proposeMessage: ({ projectId: scope, ...input }) =>
       serial(async () => {
+        const projectId = selectProject(scope),
+          store = storeFor(projectId);
         if (
-          !connection() ||
-          !online ||
+          !connection(projectId) ||
+          !stateFor(projectId).online ||
           store.state("requestsSupported", z.boolean()) !== true
         )
           throw new Error(
             "The relay does not support message requests yet, or is offline.",
           );
         const result = await (
-          await client()
+          await client(projectId)
         ).call("message-requests", messageRequestSchema, input);
         store.request(result);
         changed();
         return result;
       }),
-    requestDraft: ({ id }) =>
+    requestDraft: ({ id, projectId: scope }) =>
       serial(async () => {
+        const projectId = selectProject(scope),
+          store = storeFor(projectId);
         // Revalidate membership and pending status at the relay before proposing
         // a draft; an offline cache must not authorize a reviewed/revoked request.
         const request = await (
-            await client()
+            await client(projectId)
           ).call(`message-request?id=${id}`, messageRequestSchema),
-          conn = connection();
+          conn = connection(projectId);
         store.request(request);
         if (
           !request ||
@@ -616,13 +801,15 @@ export default function plugin(bb: BbPluginApi) {
             ),
         };
       }),
-    reviewRequest: (input) =>
+    reviewRequest: ({ projectId: scope, ...input }) =>
       serial(async () => {
+        const projectId = selectProject(scope),
+          store = storeFor(projectId);
         const request = store.getRequest(input.id);
-        if (!request || request.ownerId !== connection()?.memberId)
+        if (!request || request.ownerId !== connection(projectId)?.memberId)
           throw new Error("Only the thread owner can review requests");
         const result = await (
-          await client()
+          await client(projectId)
         ).call("review-request", messageRequestSchema, input);
         store.request(result);
         changed();
@@ -630,9 +817,11 @@ export default function plugin(bb: BbPluginApi) {
       }),
     connect: (input) =>
       serial(async () => {
-        if (connection())
+        const projectId = input.projectId,
+          store = storeFor(projectId);
+        if (connection(projectId))
           throw new Error(
-            "Disconnect before connecting another account or project",
+            "Disconnect this project before connecting another account",
           );
         const url = serverUrl(input.url);
         await bb.sdk.projects.get({ projectId: input.projectId });
@@ -672,51 +861,71 @@ export default function plugin(bb: BbPluginApi) {
           token,
           lifetime.signal,
         ).call("me", identitySchema);
-        store.reset();
-        await settings.experimental_set({ credential: token });
-        store.set("connection", {
-          url,
-          projectId: input.projectId,
-          memberId: identity.member.id,
-          roomId: identity.room.id,
-        });
-        store.cacheIdentity(identity);
-        await safeSync();
+        await saveCredential(projectId, token);
+        db.transaction(() => {
+          store.reset();
+          store.set("connection", {
+            url,
+            projectId,
+            memberId: identity.member.id,
+            roomId: identity.room.id,
+          });
+          store.cacheIdentity(identity);
+        })();
+        runtime.delete(projectId);
+        await safeSync(projectId);
         changed();
         return { ok: true };
       }),
-    disconnect: () =>
+    disconnect: (input) =>
       serial(async () => {
-        await native.disconnect();
-        store.reset();
-        await settings.experimental_set({ credential: null });
-        online = false;
-        lastSyncAt = null;
-        error = null;
-        changed();
+        const projectId = selectProject(input?.projectId);
+        await native.disconnect(projectId);
+        // Stop publication even if the secret store is temporarily unavailable.
+        storeFor(projectId).reset();
+        runtime.delete(projectId);
+        try {
+          await saveCredential(projectId, null);
+        } finally {
+          changed();
+        }
         return { ok: true };
       }),
-    invite: () =>
+    invite: (input) =>
       serial(async () =>
-        (await client()).call("invites", invitationSchema, {}),
+        (await client(selectProject(input?.projectId))).call(
+          "invites",
+          invitationSchema,
+          {},
+        ),
       ),
-    revoke: (input) =>
+    revoke: ({ projectId: scope, ...input }) =>
       serial(async () => {
+        const projectId = selectProject(scope);
         const result = await (
-          await client()
+          await client(projectId)
         ).call("revoke", z.object({ ok: z.boolean() }), input);
-        await safeSync();
+        await safeSync(projectId);
         return result;
       }),
-    sync: () =>
+    sync: (input) =>
       serial(async () => {
-        await syncOnce();
+        if (input) await syncOnce(input.projectId);
+        else {
+          let failure: unknown;
+          for (const projectId of projectIds()) {
+            try {
+              await syncOnce(projectId);
+            } catch (cause) {
+              failure ??= cause;
+            }
+          }
+          if (failure) throw failure;
+        }
         return { ok: true };
       }),
     share: ({ threadId }) =>
       serial(async () => {
-        const conn = connection();
-        if (!conn) throw new Error("Connect a project first");
         const thread = await bb.sdk.threads.get({ threadId });
         if (
           thread.providerId === MIRROR_PROVIDER ||
@@ -725,39 +934,53 @@ export default function plugin(bb: BbPluginApi) {
           throw new Error(
             "Mirrors cannot be republished; share the original owner's thread instead",
           );
-        if (thread.projectId !== conn.projectId)
-          throw new Error("Thread is outside the connected project");
+        const projectId = thread.projectId,
+          store = storeFor(projectId);
+        if (!connection(projectId))
+          throw new Error(
+            "Thread is outside a connected project; connect this project first",
+          );
         store.enable(threadId);
-        await safeSync();
+        await safeSync(projectId);
         changed();
         return { sharedId: store.link(threadId)!.sharedId };
       }),
     pause: ({ threadId }) =>
       serial(async () => {
-        store.pause(threadId);
+        // Pause the original publication too if a local thread moved projects.
+        for (const projectId of projectIds())
+          storeFor(projectId).pause(threadId);
         changed();
         return { ok: true };
       }),
     localThread: async ({ threadId }) => {
-      const link = store.link(threadId),
-        thread = await bb.sdk.threads.get({ threadId });
+      const thread = await bb.sdk.threads.get({ threadId });
+      const link = storeFor(thread.projectId).link(threadId);
       return {
         sharedId: link?.sharedId ?? null,
         sharing: Boolean(link?.enabled),
-        connectedProject: thread.projectId === connection()?.projectId,
+        connectedProject: Boolean(connection(thread.projectId)),
       };
     },
     discussionContext: async ({ threadId }) => {
-      const conn = connection();
       const thread = await bb.sdk.threads.get({ threadId });
-      const connectedProject = Boolean(
-        conn && thread.projectId === conn.projectId,
-      );
+      const projectId = thread.projectId,
+        store = storeFor(projectId);
+      const conn = connection(projectId);
+      const connectedProject = Boolean(conn);
       const link = connectedProject ? store.link(threadId) : undefined;
-      const mirror = connectedProject ? native.mirrors.byLocal(threadId) : null;
-      const sharedId = link?.sharedId ?? mirror?.sharedId ?? null;
+      const mirror = native.mirrors.byLocal(threadId);
+      const mirrorMatches =
+        mirror &&
+        mirror.projectId === projectId &&
+        mirror.roomId === conn?.roomId &&
+        mirror.memberId === conn?.memberId &&
+        mirror.state === "ready";
+      const sharedId =
+        link?.sharedId ?? (mirrorMatches ? mirror.sharedId : null);
       const comments = sharedId ? store.comments(sharedId) : [];
       return {
+        projectId,
         threadTitle: (
           thread.title ??
           thread.titleFallback ??
@@ -767,7 +990,7 @@ export default function plugin(bb: BbPluginApi) {
         sharedId,
         isMirror: Boolean(mirror),
         sharing: Boolean(link?.enabled),
-        online: connectedProject && online,
+        online: connectedProject && stateFor(projectId).online,
         identity: connectedProject ? store.identity() : null,
         commentCount: comments.length,
         openCount: comments.filter(
@@ -775,7 +998,8 @@ export default function plugin(bb: BbPluginApi) {
         ).length,
       };
     },
-    thread: async ({ id }) => {
+    thread: async ({ id, projectId: scope }) => {
+      const store = storeFor(selectProject(scope));
       const thread = store.getThread(id);
       if (!thread)
         throw new Error(
@@ -791,27 +1015,33 @@ export default function plugin(bb: BbPluginApi) {
         sharing: Boolean(link?.enabled),
       };
     },
-    addComment: (input) =>
+    addComment: ({ projectId: scope, ...input }) =>
       serial(async () => {
+        const projectId = selectProject(scope),
+          store = storeFor(projectId);
         const result = await (
-          await client()
+          await client(projectId)
         ).call("comments", commentSchema, input);
         store.comment(result);
         changed();
         return result;
       }),
-    resolve: (input) =>
+    resolve: ({ projectId: scope, ...input }) =>
       serial(async () => {
+        const projectId = selectProject(scope),
+          store = storeFor(projectId);
         const result = await (
-          await client()
+          await client(projectId)
         ).call("resolve", commentSchema, input);
         store.comment(result);
         changed();
         return result;
       }),
     feedback: async ({ threadId, commentIds }) => {
+      const local = await bb.sdk.threads.get({ threadId });
+      const store = storeFor(local.projectId);
       const link = store.link(threadId),
-        conn = connection();
+        conn = connection(local.projectId);
       if (!link || !conn)
         throw new Error("Only the local thread owner can prepare feedback");
       const thread = store.getThread(link.sharedId);
@@ -844,9 +1074,13 @@ export default function plugin(bb: BbPluginApi) {
   });
 
   // Event notifications are ephemeral; startup reconciliation catches an unloaded period.
-  for (const link of store.links()) store.dirty(link.localId);
+  for (const projectId of projectIds()) {
+    const store = storeFor(projectId);
+    for (const link of store.links()) store.dirty(link.localId);
+  }
   const dirty = ({ thread }: { thread: { id: string } }) => {
-    if (!native.mirrors.byLocal(thread.id)) store.dirty(thread.id);
+    if (native.mirrors.byLocal(thread.id)) return;
+    for (const projectId of projectIds()) storeFor(projectId).dirty(thread.id);
   };
   bb.events.on("experimental_thread.events", dirty);
   bb.events.on("thread.active", dirty);
@@ -856,31 +1090,41 @@ export default function plugin(bb: BbPluginApi) {
   bb.events.on("thread.unarchived", dirty);
   bb.events.on("thread.deleted", ({ thread }) =>
     serial(async () => {
-      const link = store.link(thread.id);
-      if (!link?.enabled) return;
-      // No transcript read after deletion. Retain the already published context on the relay.
-      const previous = link.payload
-        ? snapshotSchema.parse(JSON.parse(link.payload))
-        : store.getThread(link.sharedId);
-      if (previous) {
-        const snapshot = {
-          id: previous.id,
-          title: previous.title,
-          messages: previous.messages,
-          historyTruncated: previous.historyTruncated,
-          status: "deleted" as const,
-        };
-        store.prepare(thread.id, snapshot, hashText(JSON.stringify(snapshot)));
-        db.prepare("UPDATE links SET dirty=0, terminal=1 WHERE localId=?").run(
-          thread.id,
-        );
-      } else store.pause(thread.id);
+      for (const projectId of projectIds()) {
+        const store = storeFor(projectId),
+          link = store.link(thread.id);
+        if (!link?.enabled) continue;
+        // No transcript read after deletion. Retain the already published context on the relay.
+        const previous = link.payload
+          ? snapshotSchema.parse(JSON.parse(link.payload))
+          : store.getThread(link.sharedId);
+        if (previous) {
+          const snapshot = {
+            id: previous.id,
+            title: previous.title,
+            messages: previous.messages,
+            historyTruncated: previous.historyTruncated,
+            status: "deleted" as const,
+          };
+          store.prepare(
+            thread.id,
+            snapshot,
+            hashText(JSON.stringify(snapshot)),
+          );
+          store.clearDirty(thread.id, true);
+        } else store.pause(thread.id);
+      }
     }),
   );
   bb.background.service("sync", {
     async start(signal) {
       while (!signal.aborted && !lifetime.signal.aborted) {
-        await serial(() => safeSync(signal));
+        await serial(async () => {
+          for (const projectId of projectIds()) {
+            if (signal.aborted || lifetime.signal.aborted) break;
+            await safeSync(projectId, signal);
+          }
+        });
         try {
           await delay(2000, undefined, { signal });
         } catch {

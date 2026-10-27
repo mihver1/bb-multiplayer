@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.3.1
+
+- Host multiple isolated project rooms on one relay origin and SQLite database.
+- Add local-only `relay:create-room` and paginated `relay:list-rooms` commands;
+  retain one-time `relay:init` and the original owner's credential file.
+- Save each new room's owner credential to a separate `0600` file without printing
+  tokens; roll back room creation when the file cannot be written.
+- Support one independent room connection per local project in a single BB, on
+  the same or different relays; preserve protocol v1 compatibility.
+- Migrate legacy plugin state and credentials automatically. Scope caches, links,
+  cursors, requests, secrets, disconnect and revocation by local project.
+- Add a project selector, project-qualified shared links, multi-project sidebar
+  rows and owner-request notifications; derive local widget scope from the thread.
+- Preserve v0.3.0 native mirrors, import ledgers and sidebar actions; route mirror
+  operations through their own project and disconnect only that project's mirrors.
+- Fail closed for ambiguous unscoped operations and old links; prevent moved local
+  threads from continuing publication to their former project's room.
+- Test cross-project access control, independent feeds and membership limits,
+  existing database recovery, CLI provisioning and client compatibility.
+
 ## v0.3.0
 
 - Add the opt-in Multiplayer Mirror provider and isolated host workspace for native

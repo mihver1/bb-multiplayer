@@ -186,7 +186,14 @@ export function TeamThreadList(props: PluginThreadListProps) {
       (!needle || t.displayTitle.toLocaleLowerCase().includes(needle)),
   );
   // Never resurrect a hidden/archived local thread as a remote duplicate.
-  const remote = (team?.threads ?? [])
+  const teams = team?.projects ?? [];
+  const allThreads = teams.flatMap((project) =>
+    project.threads.map((thread) => ({
+      ...thread,
+      projectId: project.projectId,
+    })),
+  );
+  const remote = allThreads
     .filter((t) => t.localId === null)
     .filter((t) =>
       archived
@@ -195,7 +202,7 @@ export function TeamThreadList(props: PluginThreadListProps) {
     )
     .filter((t) => !needle || t.title.toLocaleLowerCase().includes(needle));
   const sharedLocal = new Set(
-    team?.threads.filter((t) => t.localId).map((t) => t.localId),
+    allThreads.filter((t) => t.localId).map((t) => t.localId),
   );
   const projects = [...native.projects];
   // The default host query may omit its personal-project record; never lose
@@ -206,6 +213,16 @@ export function TeamThreadList(props: PluginThreadListProps) {
         id: thread.projectId,
         name: "Other threads",
         isPersonal: true,
+        href: "",
+        settingsHref: "",
+      });
+  }
+  for (const teamProject of teams) {
+    if (!projects.some((project) => project.id === teamProject.projectId))
+      projects.push({
+        id: teamProject.projectId,
+        name: teamProject.identity?.room.name ?? "Team project",
+        isPersonal: false,
         href: "",
         settingsHref: "",
       });
@@ -277,7 +294,8 @@ export function TeamThreadList(props: PluginThreadListProps) {
                 : 0) ||
               b.updatedAt - a.updatedAt,
           );
-        const remotes = team?.projectId === project.id ? remote : [];
+        const projectTeam = teams.find((t) => t.projectId === project.id);
+        const remotes = remote.filter((t) => t.projectId === project.id);
         if (!locals.length && !remotes.length && needle) return null;
         const projectRows = collapsed.has(project.id)
           ? []
@@ -291,7 +309,7 @@ export function TeamThreadList(props: PluginThreadListProps) {
           <section key={project.id} className="mt-2" aria-label={project.name}>
             <ProjectHeader
               project={project}
-              shared={team?.projectId === project.id}
+              shared={Boolean(projectTeam)}
               collapsed={collapsed.has(project.id)}
               active={props.activeProjectId === project.id}
               onToggle={() =>
@@ -318,11 +336,11 @@ export function TeamThreadList(props: PluginThreadListProps) {
                   />
                 ))}
                 {remoteRows.map((thread) => {
-                  const owner = team?.identity?.members.find(
+                  const owner = projectTeam?.identity?.members.find(
                     (m) => m.id === thread.ownerId,
                   );
                   const fresh = Boolean(
-                    team?.online &&
+                    projectTeam?.online &&
                     owner &&
                     !owner.revoked &&
                     Date.now() - owner.lastSeenAt < 15000,
@@ -334,7 +352,7 @@ export function TeamThreadList(props: PluginThreadListProps) {
                       aria-label={`Open shared thread ${thread.title}`}
                       onClick={() => {
                         navigate.toPluginPanel("team", {
-                          subPath: `thread/${thread.id}`,
+                          subPath: `project/${project.id}/thread/${thread.id}`,
                         });
                         props.onNavigate();
                       }}
@@ -368,9 +386,9 @@ export function TeamThreadList(props: PluginThreadListProps) {
           Show more threads
         </button>
       )}
-      {team?.truncated && (
+      {teams.some((t) => t.truncated) && (
         <p className="p-2 text-xs text-muted-foreground">
-          Latest 200 team threads shown.
+          Latest 200 team threads per project shown.
         </p>
       )}
       {native.experimental_archived?.hasNextPage && (
