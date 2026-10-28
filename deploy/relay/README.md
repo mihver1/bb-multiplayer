@@ -1,5 +1,12 @@
 # Self-hosted playground deployment
 
+## v0.4.2 native views and automatic synchronization
+
+This is a plugin-only update. The relay runtime/image stays at v0.4.1; no relay
+redeployment, database migration or proxy changes are needed. Update/reload the
+Multiplayer plugin in each BB installation to use default native views and
+open-view synchronization.
+
 ## v0.4.1 administrator delegation
 
 Update both relay and plugin before using **Administrators → Make administrator**.

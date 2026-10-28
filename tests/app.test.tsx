@@ -496,6 +496,104 @@ describe("BB UI contracts", () => {
     ).toEqual({ id: threadId, projectId: "proj_b" });
   });
 
+  it.each([
+    { suffix: "", enabled: true, remoteStatus: "idle", opens: true },
+    { suffix: "/source", enabled: true, remoteStatus: "idle", opens: false },
+    { suffix: "", enabled: false, remoteStatus: "idle", opens: false },
+    { suffix: "", enabled: true, remoteStatus: "archived", opens: false },
+  ])(
+    "routes shared links to native by default, with source/disabled/archive fallbacks: %j",
+    async ({ suffix, enabled, remoteStatus, opens }) => {
+      const app = await loadPluginApp(() => import("../app"));
+      const slot = renderSlot(
+        app.navPanels[0],
+        {
+          subPath: `project/proj_a/thread/${threadId}${suffix}`,
+        },
+        {
+          rpc: {
+            status,
+            thread: () => ({
+              thread: {
+                id: threadId,
+                revision: 1,
+                title: "Teammate conversation",
+                status: remoteStatus,
+                ownerId: "55555555-5555-4555-8555-555555555555",
+                updatedAt: 1,
+                historyTruncated: false,
+                messages: [],
+              },
+              comments: [],
+              commentsTruncated: false,
+              localId: null,
+              sharing: false,
+            }),
+            nativeMirrorOptions: () => ({
+              enabled,
+              mirrors: [
+                { sharedId: threadId, localId: "thr_mirror", active: true },
+              ],
+            }),
+            requestState: () => ({
+              supported: false,
+              requests: [],
+              members: [],
+            }),
+          },
+        },
+      );
+      await slot.findByText("Teammate conversation");
+      await act(async () => {});
+      expect(slot.inspection.navigateCalls).toEqual(
+        opens ? [{ method: "toThread", threadId: "thr_mirror" }] : [],
+      );
+      expect(
+        slot.inspection.rpcCalls.some((c) => c.method === "openNativeMirror"),
+      ).toBe(false);
+      expect(slot.inspection.composer.submits).toEqual([]);
+    },
+  );
+
+  it("opens an owner's original thread instead of creating a mirror", async () => {
+    const app = await loadPluginApp(() => import("../app"));
+    const slot = renderSlot(
+      app.navPanels[0],
+      {
+        subPath: `project/proj_a/thread/${threadId}`,
+      },
+      {
+        rpc: {
+          status,
+          thread: () => ({
+            thread: {
+              id: threadId,
+              revision: 1,
+              title: "Own thread",
+              status: "idle",
+              ownerId: memberId,
+              updatedAt: 1,
+              historyTruncated: false,
+              messages: [],
+            },
+            comments: [],
+            commentsTruncated: false,
+            localId: "thr_own",
+            sharing: true,
+          }),
+        },
+      },
+    );
+    await waitFor(() =>
+      expect(slot.inspection.navigateCalls).toEqual([
+        { method: "toThread", threadId: "thr_own" },
+      ]),
+    );
+    expect(
+      slot.inspection.rpcCalls.some((c) => c.method === "nativeMirrorOptions"),
+    ).toBe(false);
+  });
+
   it("adds selected feedback to the local composer without submitting it", async () => {
     const app = await loadPluginApp(() => import("../app"));
     const slot = renderSlot(

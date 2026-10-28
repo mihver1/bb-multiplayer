@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   useBbNavigate,
   useComposer,
   useRpc,
   useSdk,
+  useRealtime,
+  useRealtimeConnectionState,
 } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../server";
 import { useTeamQuery } from "../hooks/use-team-query";
@@ -12,9 +14,11 @@ import { Button } from "./ui/button";
 export function OpenNativeMirror({
   sharedId,
   projectId,
+  autoOpen = false,
 }: {
   sharedId: string;
   projectId: string;
+  autoOpen?: boolean;
 }) {
   const rpc = useRpc<typeof rpcContract>(),
     sdk = useSdk(),
@@ -23,13 +27,25 @@ export function OpenNativeMirror({
     () => rpc.call("nativeMirrorOptions", { projectId }),
     [rpc, projectId],
   );
-  const { data } = useTeamQuery(load);
+  const { data, error: loadError } = useTeamQuery(load);
   const [hosts, setHosts] = useState<{ id: string; name: string }[]>([]),
     [hostId, setHostId] = useState(""),
     [busy, setBusy] = useState(false),
     [error, setError] = useState<string | null>(null);
+  const alive = useRef(false),
+    opening = useRef(false),
+    attempted = useRef(false);
+  const existingId = data?.mirrors.find(
+    (m) => m.sharedId === sharedId && m.active,
+  )?.localId;
   useEffect(() => {
-    if (!data?.enabled) return;
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+  useEffect(() => {
+    if (!data?.enabled || existingId) return;
     let alive = true;
     void sdk.hosts.list().then(
       (values) => {
@@ -45,32 +61,84 @@ export function OpenNativeMirror({
     return () => {
       alive = false;
     };
-  }, [data?.enabled, sdk]);
-  if (!data?.enabled)
+  }, [data?.enabled, existingId, sdk]);
+  const open = useCallback(() => {
+    if (opening.current) return;
+    // A mapped mirror opens even offline; its mounted banner owns synchronization.
+    if (existingId) {
+      navigate.toThread(existingId);
+      return;
+    }
+    if (!hostId) return;
+    opening.current = true;
+    setBusy(true);
+    setError(null);
+    void rpc.call("openNativeMirror", { sharedId, hostId, projectId }).then(
+      (result) => {
+        opening.current = false;
+        if (alive.current) {
+          setBusy(false);
+          navigate.toThread(result.threadId);
+        }
+      },
+      (cause) => {
+        opening.current = false;
+        if (alive.current) {
+          setBusy(false);
+          setError(
+            cause instanceof Error ? cause.message : "Could not open mirror",
+          );
+        }
+      },
+    );
+  }, [rpc, navigate, existingId, hostId, sharedId, projectId]);
+  useEffect(() => {
+    if (
+      !autoOpen ||
+      !data?.enabled ||
+      attempted.current ||
+      (!existingId && !hostId)
+    )
+      return;
+    attempted.current = true;
+    open();
+  }, [autoOpen, data?.enabled, existingId, hostId, open]);
+  if (loadError)
     return (
-      <p className="text-xs text-muted-foreground">
-        Native view is experimental. Enable native mirrors in Multiplayer
-        settings to try it; this read-only view remains available.
+      <p role="alert" className="text-xs text-destructive">
+        {loadError}
       </p>
     );
-  const existing = data.mirrors.find(
-    (m) => m.sharedId === sharedId && m.active,
-  );
+  if (!data)
+    return (
+      <p role="status" className="text-xs">
+        Loading native view…
+      </p>
+    );
+  if (!data.enabled)
+    return (
+      <p className="text-xs text-muted-foreground">
+        Native view is disabled. Enable native mirrors in Multiplayer settings;
+        this read-only view remains available.
+      </p>
+    );
   return (
     <section
       className="space-y-2 rounded-lg border border-border p-3"
       aria-label="Open native Multiplayer view"
     >
       <p className="text-xs text-muted-foreground">
-        Native BB view, no model. Imports on open/Refresh. Edits append labelled
-        versions; cached history is not erased by pausing or revocation.
+        Native BB view, no model. Syncs automatically while open. Edits append
+        labelled versions; cached history is not erased by pausing or
+        revocation.
       </p>
       <div className="flex flex-wrap gap-2">
-        {!existing && (
+        {!existingId && (
           <select
             aria-label="Machine for native mirror"
             className="min-w-0 rounded border border-border bg-background p-2 text-xs"
             value={hostId}
+            disabled={busy}
             onChange={(e) => setHostId(e.target.value)}
           >
             <option value="">Choose machine…</option>
@@ -83,32 +151,10 @@ export function OpenNativeMirror({
         )}
         <Button
           size="sm"
-          disabled={busy || (!existing && !hostId)}
-          onClick={() => {
-            setBusy(true);
-            setError(null);
-            void (
-              existing
-                ? rpc
-                    .call("refreshNativeMirror", { threadId: existing.localId })
-                    .then(() => ({ threadId: existing.localId }))
-                : rpc.call("openNativeMirror", { sharedId, hostId, projectId })
-            )
-              .then(
-                (result) => {
-                  navigate.toThread(result.threadId);
-                },
-                (cause) =>
-                  setError(
-                    cause instanceof Error
-                      ? cause.message
-                      : "Could not open mirror",
-                  ),
-              )
-              .finally(() => setBusy(false));
-          }}
+          disabled={busy || (!existingId && !hostId)}
+          onClick={open}
         >
-          Open native view
+          {busy ? "Opening native view…" : "Open native view"}
         </Button>
       </div>
       {error && (
@@ -118,6 +164,73 @@ export function OpenNativeMirror({
       )}
     </section>
   );
+}
+
+/** Only mounted native views sync. Realtime wakes the same throttled poller;
+ * polling also recovers missed signals. No composer draft is read or submitted. */
+function useMirrorSync(threadId: string, enabled: boolean) {
+  const rpc = useRpc<typeof rpcContract>();
+  const connection = useRealtimeConnectionState();
+  const [busy, setBusy] = useState(false),
+    [error, setError] = useState<string | null>(null);
+  const inFlight = useRef(false);
+  const request = useRef<(manual?: boolean) => void>(() => {});
+  useRealtime("changed", () => request.current());
+  useEffect(() => {
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let nextCheck = 0;
+    function schedule() {
+      clearTimeout(timer);
+      if (alive) timer = setTimeout(() => void sync(), 2000);
+    }
+    async function sync(manual = false) {
+      if (!alive || !enabled || connection !== "connected" || document.hidden)
+        return;
+      if (inFlight.current) {
+        schedule();
+        return;
+      }
+      if (!manual && Date.now() < nextCheck) return;
+      inFlight.current = true;
+      clearTimeout(timer);
+      if (manual) setBusy(true);
+      try {
+        await rpc.call("refreshNativeMirror", {
+          threadId,
+          ...(!manual && { onlyIfChanged: true }),
+        });
+        if (alive) setError(null);
+      } catch (cause) {
+        if (alive)
+          setError(cause instanceof Error ? cause.message : "Sync failed");
+      } finally {
+        inFlight.current = false;
+        nextCheck = Date.now() + 2000;
+        if (alive) {
+          setBusy(false);
+          schedule();
+        }
+      }
+    }
+    function visibilityChanged() {
+      clearTimeout(timer);
+      if (!document.hidden) {
+        nextCheck = 0;
+        void sync();
+      }
+    }
+    request.current = (manual) => void sync(manual);
+    void sync();
+    document.addEventListener("visibilitychange", visibilityChanged);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+      document.removeEventListener("visibilitychange", visibilityChanged);
+      request.current = () => {};
+    };
+  }, [rpc, threadId, enabled, connection]);
+  return { busy, error, refresh: () => request.current(true) };
 }
 
 export function NativeMirrorBanner() {
@@ -133,9 +246,11 @@ function MirrorBanner({ threadId }: { threadId: string }) {
     () => rpc.call("nativeMirrorState", { threadId }),
     [rpc, threadId],
   );
-  const { data } = useTeamQuery(load);
-  const [busy, setBusy] = useState(false),
-    [error, setError] = useState<string | null>(null);
+  const { data, error: loadError } = useTeamQuery(load);
+  const { busy, error, refresh } = useMirrorSync(
+    threadId,
+    Boolean(data?.isMirror && data.enabled && data.connected),
+  );
   if (!data?.isMirror) return null;
   return (
     <section
@@ -149,25 +264,15 @@ function MirrorBanner({ threadId }: { threadId: string }) {
       <p className="text-xs text-muted-foreground">
         Sending proposes your text to the owner. No model or owner agent is run.
         Plain text only; imported text is a quoted preview. Changes are appended
-        as new versions.
+        as new versions. Shared preview syncs automatically while this view is
+        open.
       </p>
       <div className="flex gap-2">
         <Button
           size="sm"
           variant="outline"
           disabled={busy || !data.enabled || !data.connected}
-          onClick={() => {
-            setBusy(true);
-            setError(null);
-            void rpc
-              .call("refreshNativeMirror", { threadId })
-              .catch((cause) =>
-                setError(
-                  cause instanceof Error ? cause.message : "Refresh failed",
-                ),
-              )
-              .finally(() => setBusy(false));
-          }}
+          onClick={refresh}
         >
           Refresh shared preview
         </Button>
@@ -177,16 +282,16 @@ function MirrorBanner({ threadId }: { threadId: string }) {
           onClick={() => {
             if (data.sharedId && data.projectId)
               navigate.toPluginPanel("team", {
-                subPath: `project/${data.projectId}/thread/${data.sharedId}`,
+                subPath: `project/${data.projectId}/thread/${data.sharedId}/source`,
               });
           }}
         >
           Open source & discussions
         </Button>
       </div>
-      {error && (
+      {(error || loadError) && (
         <p role="alert" className="text-xs text-destructive">
-          {error}
+          {error || loadError}
         </p>
       )}
     </section>

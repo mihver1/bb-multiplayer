@@ -45,13 +45,23 @@ proposal composer on remote read-only thread views. The relay
 upgrade adds a separate owner-request feed. Older relays leave proposals disabled
 without breaking normal sync. Do not redeploy or switch the active user's sidebar
 without telling them; builtin section/tree/environment grouping is not fully
-replicated yet. The v0.3.0 native mirror provider is registered but gated
-by `nativeMirrors` (default false); see `docs/native-mirror.md`. Open it explicitly
-from a teammate's shared view with a selected host. It uses an isolated empty
-workspace and no model. Native composer text creates only an owner proposal;
-`/multiplayer-refresh` imports a bounded preview. Do not enable it or create real
-mirrors without user authorization. Do not work around the human-only proposal
-check by changing initiator attribution or using another API.
+replicated yet. The native mirror provider is gated by `nativeMirrors` (default
+true, saved false respected); see `docs/native-mirror.md`. Opening a teammate's
+shared link now opens a native view, reusing its mirror or creating one on the
+sole machine (asks for a choice with multiple machines). Your own shared link
+opens its original local thread. Source/discussion links end in `/source` and
+never redirect. Archived remote threads retain the read-only preview.
+
+Native views use an isolated empty workspace and no model. While mounted and
+visible, they check for changes every 2 seconds and on throttled BB realtime
+signals; hidden tabs/socket reconnect pause checks, and closing stops them.
+Only changed message versions start imports; busy/queued runtimes are skipped,
+concurrent checks are coalesced, and uncertain pending batches still fail closed.
+Manual Refresh remains for retry. Native composer text creates only an owner
+proposal; `/multiplayer-refresh` imports a bounded preview. Do not change settings
+or create real mirrors on an agent's own initiative without user authorization.
+Do not work around the human-only proposal check by changing initiator attribution
+or using another API.
 
 Never share a mirror back into the room, switch it to an executing provider, or
 clear its import ledger to fix duplication: pending batches must be reconciled

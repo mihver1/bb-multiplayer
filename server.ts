@@ -103,7 +103,9 @@ export const rpcContract = defineRpcContract({
     output: z.object({ threadId: id }),
   },
   refreshNativeMirror: {
-    input: z.object({ threadId: id }).strict(),
+    input: z
+      .object({ threadId: id, onlyIfChanged: z.boolean().optional() })
+      .strict(),
     output: z.object({ ok: z.boolean() }),
   },
   nativeMirrorState: {
@@ -273,8 +275,8 @@ export default function plugin(bb: BbPluginApi) {
       type: "boolean",
       label: "Enable experimental native thread mirrors",
       description:
-        "Creates isolated local view threads. Imports on open/Refresh; edits append labelled versions. No model or code execution.",
-      default: false,
+        "Opens shared conversations in isolated native views and syncs while open; edits append labelled versions. No model or code execution.",
+      default: true,
     },
   });
   const db = bb.storage.database();
@@ -652,8 +654,8 @@ export default function plugin(bb: BbPluginApi) {
   bb.rpc.register(rpcContract, {
     openNativeMirror: ({ sharedId, hostId, projectId }) =>
       serial(() => native.open(selectProject(projectId), sharedId, hostId)),
-    refreshNativeMirror: async ({ threadId }) => {
-      await native.refresh(threadId);
+    refreshNativeMirror: async ({ threadId, onlyIfChanged }) => {
+      await native.refresh(threadId, onlyIfChanged);
       return { ok: true };
     },
     nativeMirrorOptions: async (input) => {

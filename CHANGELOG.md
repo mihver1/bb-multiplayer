@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.4.2
+
+- Open shared conversations in native BB views by default, reusing existing
+  mirrors and preserving saved opt-outs. Choose a machine only when necessary;
+  source/discussion links retain the read-only view without redirect loops.
+- Synchronize open native views every 2 seconds and through throttled BB realtime
+  signals, with visibility/reconnect handling and timer/listener cleanup.
+- Avoid empty refresh turns for unchanged previews; coalesce concurrent checks,
+  skip busy/queued runtimes and retain membership checks and fail-closed import recovery.
+- Plugin-only release; existing relays remain compatible and need no redeployment.
+
 ## v0.4.1
 
 - Let room owners appoint/remove administrators from a confirmed UI action.

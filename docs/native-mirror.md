@@ -1,23 +1,28 @@
-# Native Multiplayer thread view · Experimental, opt-in
+# Native Multiplayer thread view · Experimental
 
 Version 0.3.0 adds a native BB provider bridge, **Multiplayer Mirror**. It is
 not an ACP shim and never calls a model, shell, filesystem tools or another
-agent. The existing read-only shared view remains available; native mirrors
-require explicit enablement and opening by the user.
+agent. Shared conversations now open in the native view by default when the user
+opens their link. The read-only shared view remains available through **Open source
+& discussions**. Opening a view does not enable sharing or run an agent.
 
 ## Try after building/installing this version
 
-1. Enable **Enable experimental native thread mirrors** in Multiplayer settings.
-2. Open a teammate's shared conversation and choose **Open native view**.
-3. Select a machine explicitly. The plugin creates an isolated empty directory
-   under its host data, not a worktree or the user's project checkout.
-4. The created BB thread uses `multiplayer-mirror`. **Refresh shared preview**
-   imports new observed message versions. Native composer text creates an owner
-   proposal; the owner still reviews and sends their own draft separately.
+1. Open a teammate's shared conversation from the sidebar or Multiplayer page.
+   Native mirrors are enabled by default; an explicitly saved `nativeMirrors: false`
+   is respected and keeps the read-only view.
+2. An existing mirror opens immediately. For a new mirror, the sole machine is
+   selected automatically; with multiple machines, choose one. The plugin creates
+   an isolated empty directory under its host data, not a worktree or the user's
+   project checkout. Your own shared conversations open their original local thread.
+3. The created BB thread uses `multiplayer-mirror`. Its preview synchronizes
+   automatically while open; **Refresh shared preview** remains a manual retry.
+   Native composer text creates an owner proposal; the owner still reviews and
+   sends their own draft separately.
 
-No relay deployment is required: this uses the v0.2 request API. Native mirrors
-start disabled. The provider may be visible in pickers, but arbitrary creation
-is rejected; use the shared conversation's explicit open action. A mirror cannot
+No relay deployment is required: this uses the existing v0.2 request API. The
+provider may be visible in pickers, but arbitrary creation is rejected; open a
+shared conversation instead. Archived remote threads keep the source view. A mirror cannot
 become a regular agent through provider switching/forking, and cannot be shared
 back to the room. These checks run on the server dispatch boundary, not just UI.
 
@@ -32,8 +37,8 @@ back to the room. These checks run on the server dispatch boundary, not just UI.
 - `provider/mirror-store.ts`: durable mappings and per-source version ledger.
 - `provider/mirror-projection.ts`: bounded batches, safe plaintext projection,
   and verification against canonical persisted BB events.
-- `components/native-mirror.tsx`: explicit open/machine selection and a native
-  composer banner explaining the non-executing owner-proposal behavior.
+- `components/native-mirror.tsx`: default native navigation/machine selection,
+  a native composer safety banner, and visibility-scoped automatic synchronization.
 
 The real member credential stays in the BB backend. It never enters provider
 options, env or bridge IPC. The bridge calls only `multiplayer_mirror_io` through
@@ -79,10 +84,33 @@ completed-item events; very long mirrors need a future checkpoint implementation
 ledger prevents re-import on normal resume; a new mirror is never seeded by
 replaying the whole snapshot without checking it.
 
+## Open-view synchronization
+
+The mounted native banner checks immediately, then every **2 seconds after the
+previous check completes**. Existing BB realtime `changed` signals feed the same
+throttled check; polling recovers missed signals. Hidden browser tabs and a
+reconnecting BB socket pause checks, and visibility/reconnect resumes them.
+Unmounting or changing threads disposes timers/listeners. No closed mirror is
+polled, and neither the local draft nor an owner's composer is submitted.
+
+`refreshNativeMirror({ threadId, onlyIfChanged: true })` validates the current
+mapping, membership and native runtime. It compares source message versions/roles
+against the import ledger and starts an import only when something changed.
+Concurrent calls for one mirror are coalesced. Busy, provisioning, offline-host
+or queued-proposal states are skipped rather than accumulating refresh turns;
+runtime errors require a manual retry. Pending imports still reconcile against
+persisted BB events and uncertain batches never replay automatically. Connection,
+setting and lifecycle checks run again before sending a refresh.
+
+Source/discussion links end in `/source` to bypass native navigation and avoid
+redirect loops. Source links, disabled native views and failed creation retain
+the read-only preview. Failed creation is not automatically retried by realtime
+signals; an ambiguous reservation continues to fail closed.
+
 ## Deliberate preview semantics and limits
 
-- Refresh on explicit open/Refresh, not background continuous native streaming.
-  Native runtime status reflects importing/proposing, not the remote agent's run.
+- This is near-live polling, not token-by-token streaming. Native runtime status
+  reflects importing/proposing, not the remote agent's run.
 - Current relay snapshots contain at most 100 recent messages, sometimes truncated.
   This is an observed preview, not a full history import or a replica of an agent
   session. Intermediate edits not observed at refresh are not recoverable.
@@ -93,7 +121,8 @@ replaying the whole snapshot without checking it.
   plugin directives and executable fence renderers from activating locally.
   Native owner messages are provider-observed (`initiator: system`); BB may show
   them collapsed by default. Rendering and timestamps are BB's, not copied ids.
-- Each explicit refresh currently leaves a `/multiplayer-refresh` input row.
+- Each actual import turn/manual refresh currently leaves a `/multiplayer-refresh`
+  input row. Automatic checks with unchanged content create no turn or input row.
 - Native message IDs differ from remote message IDs. Use **Open source & discussions**
   for anchored comments; mapping a local message action back to the remote anchor
   is not implemented yet. The floating widget can still show thread discussions.
@@ -119,6 +148,9 @@ replaying the whole snapshot without checking it.
   batch recovery, partial import fail-closed, actual event-page cap, source edits,
   remote Markdown quoting, attachment/provider-switch/fork/republish rejection,
   disconnect blocking and proposal idempotency.
+- Default/source navigation, saved opt-out, machine selection, open-view polling,
+  visibility/reconnect/unmount cleanup, concurrency, unchanged previews, source
+  edits and fail-closed pending imports are covered by regression tests.
 - Actual BB runtime smoke under a **separate temporary plugin ID**, with a loopback
   in-memory synthetic relay: native provider thread created, user and assistant
   rows persisted and visible through native timeline; failed confirmation recovered
@@ -127,7 +159,8 @@ replaying the whole snapshot without checking it.
   team content or credentials were used. Smoke thread was stopped/archived and the
   temporary plugin and relay were removed/stopped afterward.
 
-Still required before broad enablement: two-machine real-user composer proposal
-and owner-review verification, revocation while an import is in flight, long-history
-load testing, and a less noisy refresh UI. It is off by default on a new install;
-the operator can enable it with `bb plugin config multiplayer set nativeMirrors true`.
+Still required for broader production validation: two-machine real-user composer
+proposal and owner-review verification, revocation while an import is in flight,
+long-history load testing, and a less noisy import UI. Native views are now on by
+default; a saved opt-out can be changed with
+`bb plugin config multiplayer set nativeMirrors true`.

@@ -45,7 +45,7 @@ export function registerMirrors(
   const host = bb.hosts.experimental_client({ contract: mirrorHostContract });
   let creation = Promise.resolve();
   const operations = new Map<string, Promise<unknown>>();
-  const refreshInFlight = new Set<string>();
+  const refreshes = new Map<string, Promise<void>>();
   function exclusive<T>(id: string, fn: () => Promise<T>): Promise<T> {
     const result = (operations.get(id) ?? Promise.resolve())
       .catch(() => {})
@@ -81,7 +81,7 @@ export function registerMirrors(
       thread.archivedAt !== null
     )
       throw new Error("Mirror provider/project/lifecycle mismatch");
-    return mirror;
+    return { mirror, thread };
   }
   async function history(mirror: Mirror, signal: AbortSignal) {
     const rows = [] as Awaited<ReturnType<typeof bb.sdk.threads.events.list>>;
@@ -187,7 +187,7 @@ export function registerMirrors(
       return exclusive(ctx.threadId, async () => {
         const signal = AbortSignal.any([ctx.signal, options.signal]);
         signal.throwIfAborted();
-        const mirror = await authorized(ctx.threadId, signal);
+        const { mirror } = await authorized(ctx.threadId, signal);
         const remote = await options.client(mirror.projectId, signal);
         // Every read revalidates remote membership; no member credential ever
         // crosses the provider wire. A disconnected mirror cannot read stale cache.
@@ -376,12 +376,7 @@ export function registerMirrors(
         throw new Error(
           "Mirror creation/import requires recovery; refusing to create a duplicate",
         );
-      await authorized(mirror.localId);
-      await bb.sdk.threads.send({
-        threadId: mirror.localId,
-        mode: "queue-if-active",
-        input: [{ type: "text", text: REFRESH_PROMPT, mentions: [] }],
-      });
+      await refresh(mirror.localId, true);
       return { threadId: mirror.localId };
     }
     mirror = mirrors.reserve({
@@ -411,6 +406,51 @@ export function registerMirrors(
     options.changed();
     return { threadId: thread.id };
   }
+  function refresh(localId: string, onlyIfChanged = false): Promise<void> {
+    const running = refreshes.get(localId);
+    if (running) return running;
+    const work = (async () => {
+      const { mirror, thread } = await authorized(localId);
+      // Skip busy/queued runtimes instead of accumulating polling turns.
+      // Start a new turn below; never steer an in-progress human proposal.
+      const available = (value: typeof thread) =>
+        value.queuedMessageCount === 0 &&
+        (value.runtime.displayStatus === "idle" ||
+          (!onlyIfChanged && value.runtime.displayStatus === "error"));
+      if (onlyIfChanged && thread.runtime.displayStatus === "error")
+        throw new Error(
+          "Mirror runtime needs attention. Use Refresh shared preview to retry.",
+        );
+      if (!available(thread)) return;
+      if (onlyIfChanged) {
+        const snapshot = await (
+          await options.client(mirror.projectId)
+        ).call(`thread?id=${mirror.sharedId}`, threadSchema);
+        if (
+          snapshot.id !== mirror.sharedId ||
+          snapshot.ownerId === mirror.memberId ||
+          snapshot.status === "deleted"
+        )
+          throw new Error("Remote thread unavailable for this mirror");
+        // Reconcile lost acknowledgements, but never replay an uncertain batch.
+        const pending = mirrors.pending(mirror.id);
+        if (pending) await confirm(mirror, pending.id, options.signal);
+        if (!nextMirrorBatch(snapshot, mirrors.imported(mirror.id))) return;
+      }
+      // Connection, setting or lifecycle may have changed during the relay read.
+      const current = await authorized(localId);
+      if (!available(current.thread)) return;
+      options.signal.throwIfAborted();
+      await bb.sdk.threads.send({
+        threadId: localId,
+        mode: "start",
+        input: [{ type: "text", text: REFRESH_PROMPT, mentions: [] }],
+      });
+    })();
+    refreshes.set(localId, work);
+    void work.finally(() => refreshes.delete(localId)).catch(() => {});
+    return work;
+  }
   return {
     mirrors,
     open(projectId: string, sharedId: string, hostId: string) {
@@ -421,21 +461,7 @@ export function registerMirrors(
       );
       return result;
     },
-    async refresh(localId: string) {
-      await authorized(localId);
-      if (refreshInFlight.has(localId))
-        throw new Error("Mirror refresh already requested");
-      refreshInFlight.add(localId);
-      try {
-        await bb.sdk.threads.send({
-          threadId: localId,
-          mode: "queue-if-active",
-          input: [{ type: "text", text: REFRESH_PROMPT, mentions: [] }],
-        });
-      } finally {
-        refreshInFlight.delete(localId);
-      }
-    },
+    refresh,
     async disconnect(projectId?: string) {
       const affected = mirrors
         .list()
@@ -452,7 +478,7 @@ export function registerMirrors(
     },
     async dispose() {
       await creation;
-      await Promise.allSettled(operations.values());
+      await Promise.allSettled([...operations.values(), ...refreshes.values()]);
     },
   };
 }

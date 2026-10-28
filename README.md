@@ -6,7 +6,19 @@ A working first slice of team collaboration: opt-in live conversation previews,
 contextual comments, replies, resolution, presence and deliberate handoff of
 feedback to the local agent's draft. No remote control of someone else's agent.
 
-## New in v0.4.1: appoint administrators
+## New in v0.4.2: native views and automatic synchronization
+
+Opening a shared conversation now opens its native BB view by default. Existing
+mirrors are reused; a new view uses the only machine automatically or asks you to
+choose if several are available. Your own shared conversations open the original
+local thread. **Open source & discussions** keeps the read-only preview accessible.
+
+Open native views check for updates every **2 seconds**, using existing BB realtime
+signals as well. Unchanged snapshots create no refresh turns. Checks pause in hidden
+browser tabs or while the BB socket reconnects, and stop when the view closes.
+No relay update is needed. A saved `nativeMirrors: false` setting is respected.
+
+## Introduced in v0.4.1: appoint administrators
 
 A room owner can appoint or remove administrators in **Multiplayer → Team project
 → Administrators**, with explicit confirmation. Appointed teammates can use their
@@ -50,10 +62,11 @@ operations use their own project's connection. The relay wire protocol remains v
 - Matching host/provider artifact, relay packaging and regression tests ship in
   this release. Relay APIs remain compatible with v0.2.0 clients.
 
-Native mirrors remain opt-in for new installations. Enable **Enable experimental
-native thread mirrors** in Multiplayer settings (or `bb plugin config multiplayer
-set nativeMirrors true`). This enables the native view, not automatic sharing,
-agent execution, attachments, or provider switching. See the limitations below.
+Native mirrors are now enabled by default. If previously disabled explicitly,
+enable **Enable experimental native thread mirrors** in Multiplayer settings (or
+`bb plugin config multiplayer set nativeMirrors true`). This enables the native
+view, not automatic sharing, agent execution, attachments, or provider switching.
+See the limitations below.
 
 ## Introduced in v0.2.1
 
@@ -71,8 +84,9 @@ owners** require plugin and relay v0.2.0 or later for the full workflow.
 
 - Connected projects include remote shared rows with the Multiplayer glyph.
   Local rows use native navigation, menus, draft/status and split controls.
-- A remote row currently opens the plugin-owned **read-only shared conversation**,
-  not a native agent thread. Its proposal composer sends a request to the owner.
+- Remote rows now open a native **Multiplayer Mirror** by default. The plugin-owned
+  **read-only shared conversation** remains the source/discussion view and fallback.
+  Both proposal composers send a request to the owner, not an agent instruction.
 - Owners receive a BB toast and a review banner in the owning local thread:
   **Add to my draft** or **Dismiss**, never automatic agent submission.
 - The relay must be upgraded for proposals. Older relays keep conversation/comment
@@ -84,10 +98,11 @@ owners** require plugin and relay v0.2.0 or later for the full workflow.
 
 ## Experimental native thread view
 
-A native **Multiplayer Mirror** provider bridge is implemented behind the
-`nativeMirrors` setting (off by default). On a teammate's shared view, **Open native
-view** creates an isolated local BB thread on an explicitly chosen machine.
-Refresh imports new observed messages; native composer text becomes an owner
+The native **Multiplayer Mirror** provider bridge is enabled by the `nativeMirrors`
+setting (on by default, saved opt-outs respected). Opening a teammate's shared
+conversation creates or reuses an isolated local BB thread. With multiple machines,
+choose one; with a sole machine, it is selected automatically. Open views import
+new observed message versions automatically; native composer text becomes an owner
 proposal, never an agent execution. Credentials stay server-side.
 
 Imports are acknowledged only after canonical BB events persist; reconnects
@@ -95,8 +110,9 @@ reconcile the pending batch rather than duplicate it. Partial/uncertain writes
 stop safely for recovery. Source edits append labelled versions, and remote
 bodies are plaintext-quoted to prevent local rendering of active directives/images.
 Native provider-observed user rows may be collapsed by BB. This is a bounded
-preview, not a full agent-session replica. Background native streaming and
-message-anchor mapping are not yet implemented.
+preview, not a full agent-session replica. Only open, visible views poll; closed
+mirrors do not import in the background. Token streaming and native message-anchor
+mapping are not yet implemented.
 
 The native provider was verified using a separate temporary provider/plugin and
 synthetic loopback relay, then cleaned up. See [docs/native-mirror.md](docs/native-mirror.md)
@@ -482,8 +498,9 @@ This is a pilot, not a production-hardened multi-tenant service.
   production load/security audit, distributed deployment or turnkey hosting.
 - No mention inbox, push notifications, diff-line comments, “continue locally,”
   session transfer, file sync, E2EE, content deletion or owner recovery UI yet.
-  Opt-in native mirrors use explicit Refresh and append revisions; they do not
-  import hidden model state or erase already downloaded history.
+  Native mirrors sync while open and append revisions; they do not import hidden
+  model state or erase already downloaded history. Manual Refresh remains available
+  for retry; uncertain partial imports still require recovery.
 
 ## Verification
 
@@ -520,7 +537,7 @@ checked separately; no real team conversation is shared during those checks.
 - `components/team-thread-list.tsx` — local/team sidebar replacement.
 - `components/message-requests.tsx` — proposal composer, inbox toast and owner review.
 - `shared/requests.ts` — separate request protocol and schemas.
-- `provider/` and `host.ts` — opt-in native mirror provider, isolation and durable import ledger.
+- `provider/` and `host.ts` — native mirror provider, isolation and durable import ledger.
 - `components/discussion-list.tsx` — grouped roots/replies and resolved branches.
 - `shared/discussions.ts` — deterministic grouping and parent-preserving previews.
 - `lib/discussion-target.ts` — ephemeral thread-scoped message-action targets.

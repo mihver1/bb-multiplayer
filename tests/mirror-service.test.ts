@@ -1,6 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Database from "better-sqlite3";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   createFakePluginHost,
   makeThreadResponse,
@@ -24,6 +24,7 @@ let db: Database.Database,
   relay: RelayStore,
   http: ReturnType<typeof createRelayServer>;
 let host: ReturnType<typeof createFakePluginHost>, url: string, token: string;
+let owner: ReturnType<RelayStore["authenticate"]>;
 const local = makeThreadResponse({
   id: "thr_mirror",
   projectId: "proj_b",
@@ -34,7 +35,7 @@ let handles: ReturnType<typeof createFakePluginHost>[] = [];
 beforeEach(async () => {
   db = new Database(":memory:");
   relay = new RelayStore(db);
-  const owner = relay.authenticate(relay.initialize("Team", "Alice").token);
+  owner = relay.authenticate(relay.initialize("Team", "Alice").token);
   const { ownerId: _, updatedAt: __, ...snapshot } = fixtureSnapshot();
   relay.publish(owner, snapshot);
   token = relay.join(relay.invite(owner).code, "Bob").token;
@@ -46,7 +47,6 @@ beforeEach(async () => {
     pluginId: "multiplayer",
     experimental_declaredIconNames: ["people"],
     agentSkillIds: ["multiplayer"],
-    settings: { nativeMirrors: true },
     sdk: {
       projects: {
         get: async () => ({ id: "proj_b", name: "B" }),
@@ -70,6 +70,7 @@ beforeEach(async () => {
   });
 });
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const h of handles) await h.harness.lifecycle.dispose();
   await new Promise<void>((resolve) => http.close(() => resolve()));
   db.close();
@@ -106,7 +107,230 @@ function hook(
   );
 }
 
+async function persistImport() {
+  const result = await operation({ op: "read" });
+  if (result.kind !== "batch") throw new Error("Expected batch");
+  const assembler = experimental_createDeltaAssembler({
+    providerId: MIRROR_PROVIDER,
+  });
+  const offset = events.length;
+  events.push(
+    ...assembler
+      .assemble({
+        threadId: local.id,
+        deltas: [{ kind: "turn.open" }, ...batchDeltas(result.batch)],
+      })
+      .map(({ type, scope, ...data }, i) => ({
+        type,
+        scope,
+        data,
+        seq: offset + i + 1,
+        id: `e${offset + i}`,
+        threadId: local.id,
+        createdAt: 1,
+      })),
+  );
+  return result.batch;
+}
+function autoRefresh() {
+  return host.harness.behavior.callRpc("refreshNativeMirror", {
+    threadId: local.id,
+    onlyIfChanged: true,
+  });
+}
+
 describe("native mirror server boundary", () => {
+  it("enables native views by default but respects an explicitly disabled setting", async () => {
+    expect(
+      await host.harness.behavior.callRpc("nativeMirrorOptions", {
+        projectId: "proj_b",
+      }),
+    ).toMatchObject({ enabled: true, mirrors: [] });
+    await host.harness.behavior.setSettings({ nativeMirrors: false });
+    expect(
+      await host.harness.behavior.callRpc("nativeMirrorOptions", {
+        projectId: "proj_b",
+      }),
+    ).toMatchObject({ enabled: false });
+    await expect(open()).rejects.toThrow("Enable experimental native mirrors");
+    expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(
+      0,
+    );
+  });
+  it("polls only changed message versions, including edits, without empty refresh turns", async () => {
+    await open();
+    const first = await persistImport();
+    await operation({ op: "commit", batchId: first.id });
+    await autoRefresh();
+    await autoRefresh();
+    await open();
+    expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(0);
+    const { ownerId: _, updatedAt: __, ...snapshot } = fixtureSnapshot();
+    const text = "Updated remote answer";
+    relay.publish(owner, {
+      ...snapshot,
+      revision: 2,
+      messages: snapshot.messages.map((m) =>
+        m.id === "a1"
+          ? {
+              ...m,
+              text,
+              version: createHash("sha256").update(text).digest("hex"),
+            }
+          : m,
+      ),
+    });
+    await autoRefresh();
+    expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(1);
+    expect(
+      host.harness.inspection.sdk.callsTo("threads.send")[0]?.[0],
+    ).toMatchObject({
+      threadId: local.id,
+      mode: "start",
+      input: [{ type: "text", text: REFRESH_PROMPT, mentions: [] }],
+    });
+    const edit = await persistImport();
+    expect(edit.entries).toHaveLength(1);
+    expect(edit.entries[0].text).toContain("Updated remote assistant message");
+    await operation({ op: "commit", batchId: edit.id });
+    await autoRefresh();
+    expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(1);
+  });
+  it("rechecks connection and runtime after an in-flight relay read", async () => {
+    await open();
+    const fetch = globalThis.fetch;
+    let finish!: () => void;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (...args) => {
+      const response = await fetch(...args);
+      if (String(args[0]).includes("/v1/thread?"))
+        await new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+      return response;
+    });
+    const refresh = autoRefresh();
+    await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+    host.harness.inspection.sdk.stub("threads.get", async () => ({
+      ...local,
+      runtime: { displayStatus: "active" },
+    }));
+    finish();
+    await refresh;
+    expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(0);
+
+    host.harness.inspection.sdk.stub("threads.get", async () => local);
+    let settled = false;
+    const disconnected = autoRefresh().catch((cause) => {
+      settled = true;
+      expect(cause.message).toContain("not mapped");
+    });
+    const previous = finish;
+    await vi.waitFor(() => expect(finish).not.toBe(previous));
+    await host.harness.behavior.callRpc("disconnect", { projectId: "proj_b" });
+    finish();
+    await disconnected;
+    expect(settled).toBe(true);
+    expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(0);
+  });
+  it("coalesces simultaneous refreshes from multiple views", async () => {
+    await open();
+    let finish!: () => void;
+    host.harness.inspection.sdk.stub(
+      "threads.send",
+      () =>
+        new Promise((resolve) => {
+          finish = () => resolve({ ok: true, delivery: "sent" });
+        }),
+    );
+    const refreshes = [autoRefresh(), autoRefresh(), autoRefresh()];
+    await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+    expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(1);
+    finish();
+    await Promise.all(refreshes);
+  });
+  it.each([
+    "active",
+    "starting",
+    "pending",
+    "provisioning",
+    "waiting-for-host",
+    "stopping",
+  ] as const)(
+    "does not queue refreshes while runtime is %s",
+    async (displayStatus) => {
+      await open();
+      host.harness.inspection.sdk.stub("threads.get", async () => ({
+        ...local,
+        runtime: { displayStatus },
+      }));
+      await autoRefresh();
+      await autoRefresh();
+      expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(
+        0,
+      );
+    },
+  );
+  it("does not queue behind proposals and requires manual retry after runtime failure", async () => {
+    await open();
+    host.harness.inspection.sdk.stub("threads.get", async () => ({
+      ...local,
+      queuedMessageCount: 1,
+    }));
+    await autoRefresh();
+    expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(0);
+    host.harness.inspection.sdk.stub("threads.get", async () => ({
+      ...local,
+      runtime: { displayStatus: "error" },
+    }));
+    await expect(autoRefresh()).rejects.toThrow("needs attention");
+    expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(0);
+    await host.harness.behavior.callRpc("refreshNativeMirror", {
+      threadId: local.id,
+    });
+    expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(1);
+  });
+  it("reconciles a persisted pending import during polling without sending another turn", async () => {
+    await open();
+    await persistImport();
+    await autoRefresh();
+    await autoRefresh();
+    expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(0);
+    expect(await operation({ op: "read" })).toEqual({ kind: "done" });
+  });
+  it("never replays uncertain pending imports from the automatic poller", async () => {
+    await open();
+    expect((await operation({ op: "read" })).kind).toBe("batch");
+    await expect(autoRefresh()).rejects.toThrow("persistence is uncertain");
+    expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(0);
+  });
+  it.each([
+    "disabled",
+    "disconnected",
+    "archived",
+    "deleted",
+    "wrong-provider",
+    "revoked",
+  ])("does not auto-refresh a %s mirror", async (reason) => {
+    await open();
+    if (reason === "disabled")
+      await host.harness.behavior.setSettings({ nativeMirrors: false });
+    if (reason === "disconnected")
+      await host.harness.behavior.callRpc("disconnect");
+    if (reason === "revoked") relay.revoke(owner, relay.authenticate(token).id);
+    if (
+      reason === "archived" ||
+      reason === "deleted" ||
+      reason === "wrong-provider"
+    )
+      host.harness.inspection.sdk.stub("threads.get", async () => ({
+        ...local,
+        ...(reason === "archived" && { archivedAt: 1 }),
+        ...(reason === "deleted" && { deletedAt: 1 }),
+        ...(reason === "wrong-provider" && { providerId: "pi" }),
+      }));
+    await expect(autoRefresh()).rejects.toThrow();
+    expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(0);
+  });
   it("reserves one mirror and reuses it; real owners never get a mirror of their own thread", async () => {
     const [a, b] = await Promise.all([open(), open()]);
     expect(a).toEqual(b);

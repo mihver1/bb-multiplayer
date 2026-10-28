@@ -5,6 +5,8 @@ Keep agent execution, worktrees, terminals and provider keys local while your te
 discusses explicitly shared conversations.
 
 - Team page with members, last-seen presence and near-live thread previews.
+- Shared conversations open in native BB views by default and sync while open;
+  source previews and discussions remain available separately. No model runs.
 - A movable **Team** floating widget in the main thread — no side panel required.
 - Message-anchored discussion branches: each root comment keeps its replies
   underneath, with resolve/reopen and collapsible resolved replies. Message

@@ -323,8 +323,11 @@ function TeamPage({ subPath }: { subPath: string }) {
   const load = useCallback(() => rpc.call("status"), [rpc]);
   const { data, error } = useLoad(load);
   const route =
-    /^project\/([a-zA-Z0-9_-]+)(?:\/thread\/([a-f0-9-]{36}))?$/.exec(subPath);
-  const legacyThread = /^thread\/([a-f0-9-]{36})$/.exec(subPath)?.[1];
+    /^project\/([a-zA-Z0-9_-]+)(?:\/thread\/([a-f0-9-]{36})(\/source)?)?$/.exec(
+      subPath,
+    );
+  const legacyRoute = /^thread\/([a-f0-9-]{36})(\/source)?$/.exec(subPath);
+  const legacyThread = legacyRoute?.[1];
   const [selection, setSelection] = useState<{
     from: string;
     projectId: string;
@@ -385,6 +388,7 @@ function TeamPage({ subPath }: { subPath: string }) {
         <ProjectTeamPage
           key={projectId}
           projectId={projectId}
+          preferNative={!route?.[3] && !legacyRoute?.[2]}
           selected={
             selection?.from === subPath
               ? undefined
@@ -399,9 +403,11 @@ function TeamPage({ subPath }: { subPath: string }) {
 function ProjectTeamPage({
   projectId,
   selected,
+  preferNative,
 }: {
   projectId: string;
   selected?: string;
+  preferNative: boolean;
 }) {
   const rpc = useRpc<typeof rpcContract>(),
     navigate = useBbNavigate();
@@ -453,10 +459,11 @@ function ProjectTeamPage({
             <Icon name="ArrowLeft" className="size-4" /> Team project
           </Button>
           <ThreadDetail
-            key={`${projectId}:${selected}`}
+            key={`${projectId}:${selected}:${preferNative}`}
             projectId={projectId}
             id={selected}
             status={data}
+            preferNative={preferNative}
           />
         </div>
       </div>
@@ -759,6 +766,7 @@ function ThreadDetail({
   initialQuote,
   onFeedback,
   inline = false,
+  preferNative = false,
   discussionTarget,
 }: {
   id: string;
@@ -769,6 +777,7 @@ function ThreadDetail({
   initialQuote?: string;
   onFeedback?: (text: string) => void;
   inline?: boolean;
+  preferNative?: boolean;
   discussionTarget?: DiscussionTarget | null;
 }) {
   const rpc = useRpc<typeof rpcContract>(),
@@ -788,6 +797,10 @@ function ThreadDetail({
   const [notice, setNotice] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const appliedTarget = useRef<number | null>(null);
+  const localId = data?.localId;
+  useEffect(() => {
+    if (preferNative && localId) navigate.toThread(localId);
+  }, [preferNative, localId, navigate]);
   useEffect(() => {
     if (
       !data ||
@@ -914,6 +927,36 @@ function ThreadDetail({
           history is not included.
         </Notice>
       )}
+      {!inline &&
+        data.localId === null &&
+        identity &&
+        data.thread.ownerId !== identity.member.id && (
+          <div className="space-y-3">
+            <OpenNativeMirror
+              key={`native-${projectId}-${id}`}
+              sharedId={id}
+              projectId={projectId}
+              autoOpen={
+                preferNative &&
+                data.thread.status !== "archived" &&
+                data.thread.status !== "deleted"
+              }
+            />
+            {preferNative && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() =>
+                  navigate.toPluginPanel("team", {
+                    subPath: `project/${projectId}/thread/${id}/source`,
+                  })
+                }
+              >
+                Open source & discussions
+              </Button>
+            )}
+          </div>
+        )}
       {!inline && (
         <section className="space-y-3" aria-label="Shared messages">
           {data.thread.messages.map((message) => (
@@ -969,19 +1012,12 @@ function ThreadDetail({
         data.localId === null &&
         identity &&
         data.thread.ownerId !== identity.member.id && (
-          <div className="space-y-3">
-            <OpenNativeMirror
-              key={`native-${projectId}-${id}`}
-              sharedId={id}
-              projectId={projectId}
-            />
-            <MessageRequestComposer
-              key={`${projectId}:${id}`}
-              sharedId={id}
-              projectId={projectId}
-              ownerName={author(data.thread.ownerId)}
-            />
-          </div>
+          <MessageRequestComposer
+            key={`${projectId}:${id}`}
+            sharedId={id}
+            projectId={projectId}
+            ownerName={author(data.thread.ownerId)}
+          />
         )}
       <section
         className={inline ? "multiplayer-widget-discussions" : "space-y-3"}
