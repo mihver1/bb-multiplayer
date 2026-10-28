@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.4.1
+
+- Let room owners appoint/remove administrators from a confirmed UI action.
+- Allow appointed members to create and connect independent project rooms using
+  their existing credentials; do not grant source-room membership management,
+  administrator delegation, thread ownership or access to unrelated rooms.
+- Recheck live grants for every creation/role mutation; make assignments idempotent
+  and emit room-scoped member events. Revocation and demotion fail closed.
+- Preserve v1 owner/member roles with an optional admin flag and capability signal;
+  use an additive grant table so existing credentials and older clients keep working.
+- Explain that newly created rooms remain owned by their creator after source-room
+  demotion and retain their independent owner permissions.
+
 ## v0.4.0
 
 - Add **Create new room** in Multiplayer onboarding, using a saved owner

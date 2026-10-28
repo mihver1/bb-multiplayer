@@ -302,7 +302,7 @@ describe("BB UI contracts", () => {
       },
     );
     fireEvent.click(await slot.findByText("Create new room"));
-    await slot.findByText(/Connect as a room owner first/);
+    await slot.findByText(/Connect as a room owner or ask/);
     expect(slot.queryByText("Create room and connect")).toBeNull();
     expect(
       slot.inspection.rpcCalls.some((c) => c.method === "createRoom"),

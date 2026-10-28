@@ -42,7 +42,7 @@ export function CreateRoomForm({
   if (!options)
     return (
       <p role={error ? "alert" : "status"}>
-        {error ?? "Loading owner connections…"}
+        {error ?? "Loading owner and administrator connections…"}
       </p>
     );
   if (!options.sources.length && !pending)
@@ -51,9 +51,9 @@ export function CreateRoomForm({
         role="status"
         className="rounded-lg border border-border p-4 text-sm text-muted-foreground"
       >
-        Connect as a room owner first using “Use member credential”. Then you
-        can create rooms for other local projects here. Ordinary members cannot
-        create rooms.
+        Connect as a room owner or ask your room's owner to appoint you as an
+        administrator. Then you can create rooms for other local projects here.
+        Ordinary members cannot create rooms.
       </p>
     );
   return (
@@ -87,7 +87,7 @@ export function CreateRoomForm({
       }}
     >
       <label className="block space-y-1 text-sm">
-        <span>Create on server using owner connection</span>
+        <span>Create on server using owner or administrator connection</span>
         <select
           value={sourceProjectId}
           disabled={busy || Boolean(pending)}
@@ -96,7 +96,7 @@ export function CreateRoomForm({
         >
           {pending && !source && (
             <option value={pending.sourceProjectId}>
-              Original owner connection unavailable
+              Original creator connection unavailable
             </option>
           )}
           {options.sources.map((s) => (
@@ -131,7 +131,8 @@ export function CreateRoomForm({
       )}
       {!source && (
         <p role="alert" className="text-sm text-destructive">
-          Restore the original owner connection before retrying.
+          Restore the original creator connection and its room-creation rights
+          before retrying.
         </p>
       )}
       {(failure || error) && (

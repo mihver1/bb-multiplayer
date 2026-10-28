@@ -1,5 +1,26 @@
 # Self-hosted playground deployment
 
+## v0.4.1 administrator delegation
+
+Update both relay and plugin before using **Administrators → Make administrator**.
+The relay automatically adds `member_admins`, leaving existing member rows, roles,
+tokens and data intact. `/v1/me` includes optional `admin` flags and
+`capabilities.memberAdministration`; `/health` also advertises the capability.
+Old clients ignore these extensions and keep syncing. No automatic promotions.
+
+`POST /v1/member-admin` accepts `{ memberId, admin }`, revalidates live membership
+and requires the target room's owner. It cannot alter the owner, revoked members,
+other rooms, or grant through an ordinary/admin account. `POST /v1/rooms` permits
+owners and appointed admins under the existing room/rate caps, with live checks
+including after streaming a body. Room inventory remains local-operator only.
+
+Admins gain only room creation, not source-room invites/revocation or access to
+another participant's owner requests. New rooms have independent owner credentials:
+demoting an admin in the source room does not revoke rooms they already own or
+those rooms' normal owner permissions. If a pending creation needs recovery after
+demotion, restore the original grant rather than discarding its prepared token.
+Back up the relay database as usual; no nginx or environment changes are required.
+
 ## v0.4.0 UI room creation
 
 After updating both relay and plugin, existing owners can use **Multiplayer →
@@ -64,7 +85,7 @@ name already exists. Failed credential-file writes roll back the room creation.
 
 All room owners use `https://multiplayer.selfhost.ru`, with separate credentials
 and invitations. Room owners cannot enumerate or administer other rooms through
-HTTP. The updated owner-only creation endpoint does not expose inventory;
+HTTP. The updated owner/admin creation endpoint does not expose inventory;
 `list-rooms` still requires local operator access and returns
 only IDs/names (up to 50 per page) and a nullable `nextCursor`. The updated BB plugin
 can keep one connection per local project simultaneously; choose **Team project**
@@ -78,7 +99,7 @@ The v0.2.0 relay adds owner message requests (additive SQLite tables and
 `/v1/request-events`). The image includes `shared/requests.ts`. Before deploying,
 back up SQLite consistently and recreate only the relay service. Old clients
 remain compatible because request events do not enter the v1 conversation feed.
-The current release image is `bb-multiplayer-relay:0.4.0`; retain the previous image and
+The current release image is `bb-multiplayer-relay:0.4.1`; retain the previous image and
 source backup for rollback. Never rerun `init` or replace the existing data directory.
 
 ## Live deployment

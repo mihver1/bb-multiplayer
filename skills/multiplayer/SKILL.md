@@ -18,7 +18,8 @@ Use the Team project selector on Multiplayer to manage that project only.
 ## Safety and workflow
 
 - Never create a real project room, enable sharing, connect to a remote relay,
-  generate/redeem an invitation, revoke someone, or disconnect on an agent's own
+  appoint/remove an administrator, generate/redeem an invitation, revoke someone,
+  or disconnect on an agent's own
   initiative. Obtain the local
   user's authorization. Connecting alone shares no conversations.
 - Review publication scope with the user: title/status and bounded recent
@@ -92,8 +93,24 @@ never echo response bodies or credentials. Do not alter global DNS/VPN settings,
 `/etc/hosts`, or disable TLS without explicit approval. A proxy HTML 401 is not
 proof of revoked membership and must not clear saved connection state.
 
+Administrator UI: the room owner uses **Team project → Administrators → Make
+administrator**, then confirms. Remove administrator has its own confirmation.
+Only that room's owner can change grants for active ordinary members, not self,
+other owners, revoked members or other rooms. An admin can create rooms but cannot
+delegate admin rights, invite/revoke source-room members or bypass request privacy.
+The `setMemberAdmin` RPC requires `{ projectId, memberId, admin }`; the relay uses
+`POST /v1/member-admin`. The optional identity capability `memberAdministration`
+gates the UI. `role` stays owner/member; optional `admin` is additive for old clients.
+
+Demotion immediately blocks new creation with the source credential, even with
+stale cache. Newly created rooms and their independent owner credentials persist;
+source-room demotion/revocation does not remove those owner permissions. Explain
+this before granting rights. Permissions are per membership, not a global user.
+A pending creation after demotion needs the original grant restored for recovery;
+never clear its prepared token or metadata to bypass a denial.
+
 Room creation UI: select an unconnected **Team project → Create new room**, then
-an existing owner connection and the new room name. The new credential stays in
+an existing owner or administrator connection and the new room name. The new credential stays in
 BB secret settings; only its hash is sent in the creation body. Other members and
 conversations are not copied. This requires an upgraded relay advertising
 `capabilities.roomCreation`; older relays keep syncing normally. Ordinary members
@@ -101,9 +118,9 @@ and anonymous callers cannot create rooms. A fresh relay still needs init once.
 Remote creation is capped at 100 total rooms and 10 requests/minute/source IP.
 
 The `createRoom` RPC takes `{ projectId, sourceProjectId, name }` and returns no
-credential. `roomCreationOptions` exposes only owner-source labels and non-secret
+credential. `roomCreationOptions` exposes only eligible creator labels and non-secret
 pending metadata. A failed/uncertain attempt survives plugin reload; use **Retry
-room creation** with the original owner connection, never clear its pending state
+room creation** with the original creator connection, never clear its pending state
 or the prepared credential to work around an error. No automatic retry creates
 rooms in the background. Back up BB secret settings: UI-created credentials are
 not written to files on the relay. Do not invoke creation merely to test a live
@@ -118,7 +135,7 @@ mode `0600`, without printing the token or replacing `owner-credential.json`.
 `npm run relay:list-rooms` returns up to 50 non-secret room IDs/names and a nullable
 `nextCursor`; use `npm run relay:list-rooms -- <nextCursor>` for another page.
 The inventory and bootstrap remain local-only; `POST /v1/rooms` is the new
-owner-authorized creation API. Never rerun `init` on an existing database.
+owner/admin-authorized creation API. Never rerun `init` on an existing database.
 Existing v1 credentials, invitations and history remain valid; creation adds its
 own table automatically.
 The README describes HTTPS deployment and environment variables. UI is at the

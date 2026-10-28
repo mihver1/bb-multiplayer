@@ -98,6 +98,238 @@ afterEach(async () => {
   db.close();
 });
 
+it("lets an owner delegate creation to a teammate without granting source-room management", async () => {
+  const alice = host(),
+    bob = host();
+  plugin(alice.bb);
+  plugin(bob.bb);
+  await rpc(alice, "connect", { projectId: "proj_a", url, token: a.token });
+  const token = relay.join(
+    relay.invite(relay.authenticate(a.token)).code,
+    "Bob",
+  ).token;
+  const memberId = relay.authenticate(token).id;
+  await rpc(bob, "connect", { projectId: "proj_a", url, token });
+  expect(
+    (await rpc(bob, "roomCreationOptions", { projectId: "proj_b" })).sources,
+  ).toEqual([]);
+  await expect(
+    rpc(bob, "setMemberAdmin", { projectId: "proj_a", memberId, admin: true }),
+  ).rejects.toThrow("Only the room owner");
+  await rpc(alice, "setMemberAdmin", {
+    projectId: "proj_a",
+    memberId,
+    admin: true,
+  });
+  expect(
+    (
+      await rpc(alice, "status", { projectId: "proj_a" })
+    ).identity?.members.find((m) => m.id === memberId)?.admin,
+  ).toBe(true);
+  await rpc(bob, "sync");
+  expect(
+    (await rpc(bob, "status", { projectId: "proj_a" })).identity?.member,
+  ).toMatchObject({ role: "member", admin: true });
+  expect(
+    (await rpc(bob, "roomCreationOptions", { projectId: "proj_b" })).sources,
+  ).toEqual([
+    { projectId: "proj_a", url, roomName: "Room A", ownerName: "Bob" },
+  ]);
+  const next = await bob.harness.lifecycle.reload(plugin);
+  hosts.push(next);
+  await rpc(next, "createRoom", {
+    projectId: "proj_b",
+    sourceProjectId: "proj_a",
+    name: "Bob's room",
+  });
+  expect(
+    (await rpc(next, "status", { projectId: "proj_b" })).identity?.member,
+  ).toMatchObject({ role: "owner", name: "Bob" });
+  expect((await rpc(next, "status", { projectId: "proj_b" })).threads).toEqual(
+    [],
+  );
+  await expect(rpc(next, "invite", { projectId: "proj_a" })).rejects.toThrow();
+  await expect(
+    rpc(next, "setMemberAdmin", {
+      projectId: "proj_a",
+      memberId,
+      admin: false,
+    }),
+  ).rejects.toThrow("Only the room owner");
+  await rpc(alice, "setMemberAdmin", {
+    projectId: "proj_a",
+    memberId,
+    admin: false,
+  });
+  // Stale admin cache must not authorize another creation, even before the next sync.
+  await expect(
+    rpc(next, "createRoom", {
+      projectId: "proj_c",
+      sourceProjectId: "proj_a",
+      name: "Not allowed",
+    }),
+  ).rejects.toThrow("administrator");
+  expect(
+    (
+      await rpc(next, "roomCreationOptions", { projectId: "proj_c" })
+    ).sources.map((s) => s.projectId),
+  ).toEqual(["proj_b"]);
+  expect(
+    (await rpc(next, "status", { projectId: "proj_b" })).connection,
+  ).not.toBeNull();
+  expect(relay.listRooms().rooms).toHaveLength(3);
+  expect(alice.harness.inspection.sdk.callsTo("threads.send")).toEqual([]);
+  expect(next.harness.inspection.sdk.callsTo("threads.timeline")).toEqual([]);
+});
+
+it("preserves an admin's pending room after demotion and recovers it after the grant is restored", async () => {
+  const alice = host(),
+    bob = host();
+  plugin(alice.bb);
+  plugin(bob.bb);
+  await rpc(alice, "connect", { projectId: "proj_a", url, token: a.token });
+  const token = relay.join(
+    relay.invite(relay.authenticate(a.token)).code,
+    "Bob",
+  ).token;
+  const memberId = relay.authenticate(token).id;
+  await rpc(bob, "connect", { projectId: "proj_a", url, token });
+  await rpc(alice, "setMemberAdmin", {
+    projectId: "proj_a",
+    memberId,
+    admin: true,
+  });
+  const original = globalThis.fetch;
+  vi.stubGlobal(
+    "fetch",
+    async (input: string | URL | Request, init?: RequestInit) => {
+      const response = await original(input, init);
+      if (String(input).endsWith("/v1/rooms"))
+        throw new Error("Lost acknowledgement");
+      return response;
+    },
+  );
+  const input = {
+    projectId: "proj_b",
+    sourceProjectId: "proj_a",
+    name: "Pending admin room",
+  };
+  await expect(rpc(bob, "createRoom", input)).rejects.toThrow();
+  vi.unstubAllGlobals();
+  const pending = (
+    await rpc(bob, "roomCreationOptions", { projectId: "proj_b" })
+  ).pending;
+  expect(pending).not.toBeNull();
+  await rpc(alice, "setMemberAdmin", {
+    projectId: "proj_a",
+    memberId,
+    admin: false,
+  });
+  await expect(rpc(bob, "createRoom", input)).rejects.toThrow("administrator");
+  expect(
+    (await rpc(bob, "roomCreationOptions", { projectId: "proj_b" })).pending,
+  ).toEqual(pending);
+  expect(
+    (await rpc(bob, "roomCreationOptions", { projectId: "proj_b" })).sources,
+  ).toEqual([]);
+  const next = await bob.harness.lifecycle.reload(plugin);
+  hosts.push(next);
+  await rpc(alice, "setMemberAdmin", {
+    projectId: "proj_a",
+    memberId,
+    admin: true,
+  });
+  await rpc(next, "createRoom", input);
+  expect(relay.listRooms().rooms).toHaveLength(3);
+  expect(
+    (await rpc(next, "status", { projectId: "proj_b" })).identity?.room.name,
+  ).toBe(input.name);
+});
+
+it("requires an explicit project for administrator changes and refuses foreign or revoked members", async () => {
+  const local = host();
+  plugin(local.bb);
+  await connectBoth(local);
+  const memberA = relay.authenticate(
+    relay.join(relay.invite(relay.authenticate(a.token)).code, "A member")
+      .token,
+  );
+  const memberB = relay.authenticate(
+    relay.join(relay.invite(relay.authenticate(b.token)).code, "B member")
+      .token,
+  );
+  await expect(
+    rpc(local, "setMemberAdmin", {
+      memberId: memberA.id,
+      admin: true,
+    } as never),
+  ).rejects.toThrow();
+  await expect(
+    rpc(local, "setMemberAdmin", {
+      projectId: "proj_b",
+      memberId: memberA.id,
+      admin: true,
+    }),
+  ).rejects.toThrow();
+  await rpc(local, "setMemberAdmin", {
+    projectId: "proj_b",
+    memberId: memberB.id,
+    admin: true,
+  });
+  expect(relay.identity(memberA).member.admin).toBe(false);
+  expect(relay.identity(memberB).member.admin).toBe(true);
+  relay.revoke(relay.authenticate(b.token), memberB.id);
+  await expect(
+    rpc(local, "setMemberAdmin", {
+      projectId: "proj_b",
+      memberId: memberB.id,
+      admin: true,
+    }),
+  ).rejects.toThrow();
+});
+
+it("keeps older relays working and explains the required administrator-management upgrade", async () => {
+  const local = host();
+  plugin(local.bb);
+  await rpc(local, "connect", { projectId: "proj_a", url, token: a.token });
+  const memberId = relay.authenticate(
+    relay.join(relay.invite(relay.authenticate(a.token)).code, "Bob").token,
+  ).id;
+  const original = globalThis.fetch,
+    calls: string[] = [];
+  vi.stubGlobal(
+    "fetch",
+    async (input: string | URL | Request, init?: RequestInit) => {
+      calls.push(String(input));
+      const response = await original(input, init);
+      if (!String(input).endsWith("/v1/me")) return response;
+      const value = await response.json();
+      delete value.capabilities;
+      delete value.member.admin;
+      for (const member of value.members) delete member.admin;
+      return new Response(JSON.stringify(value), {
+        status: response.status,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  );
+  await expect(
+    rpc(local, "setMemberAdmin", {
+      projectId: "proj_a",
+      memberId,
+      admin: true,
+    }),
+  ).rejects.toThrow("Upgrade the relay");
+  expect(calls.some((url) => url.endsWith("/v1/member-admin"))).toBe(false);
+  await rpc(local, "sync");
+  expect((await rpc(local, "status", { projectId: "proj_a" })).online).toBe(
+    true,
+  );
+  expect(
+    (await rpc(local, "roomCreationOptions", { projectId: "proj_b" })).sources,
+  ).toHaveLength(1);
+});
+
 it("creates a room from a saved owner connection, attaches only the target project and keeps tokens server-side", async () => {
   const local = host();
   plugin(local.bb);

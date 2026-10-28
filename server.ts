@@ -14,6 +14,8 @@ import {
   snapshotSchema,
   invitationSchema,
   credentialSchema,
+  setMemberAdminSchema,
+  canCreateRooms,
   serverUrl,
   ProtocolError,
   type SharedThread,
@@ -184,6 +186,10 @@ export const rpcContract = defineRpcContract({
   invite: { input: optionalScope, output: invitationSchema },
   revoke: {
     input: z.object({ memberId: uuid, projectId: id.optional() }).strict(),
+    output: z.object({ ok: z.boolean() }),
+  },
+  setMemberAdmin: {
+    input: setMemberAdminSchema.extend({ projectId: id }),
     output: z.object({ ok: z.boolean() }),
   },
   sync: { input: optionalScope, output: z.object({ ok: z.boolean() }) },
@@ -841,7 +847,7 @@ export default function plugin(bb: BbPluginApi) {
       return {
         sources: connections().flatMap((conn) => {
           const identity = storeFor(conn.projectId).identity();
-          return identity?.member.role === "owner" && !identity.member.revoked
+          return identity && canCreateRooms(identity.member)
             ? [
                 {
                   projectId: conn.projectId,
@@ -873,7 +879,8 @@ export default function plugin(bb: BbPluginApi) {
         }
         await bb.sdk.projects.get({ projectId });
         const source = connection(sourceProjectId);
-        if (!source) throw new Error("Connect as a room owner first");
+        if (!source)
+          throw new Error("Connect as a room owner or administrator first");
         let pending = store.state("pendingRoom", pendingRoomSchema);
         if (
           pending &&
@@ -884,7 +891,7 @@ export default function plugin(bb: BbPluginApi) {
             pending.sourceRoomId !== source.roomId)
         )
           throw new Error(
-            "A room creation is pending for this project. Retry the original name and owner connection.",
+            "A room creation is pending for this project. Retry the original name and creator connection.",
           );
         const remote = await client(sourceProjectId);
         const health = await remote.checkHealth();
@@ -894,8 +901,10 @@ export default function plugin(bb: BbPluginApi) {
           );
         // Revalidate identity on the relay, not the cached role used for UI hints.
         await heartbeat(sourceProjectId, remote);
-        if (storeFor(sourceProjectId).identity()?.member.role !== "owner")
-          throw new Error("Only a room owner can create a new room");
+        if (!canCreateRooms(storeFor(sourceProjectId).identity()?.member))
+          throw new Error(
+            "Only a room owner or administrator can create a new room",
+          );
         let token = parseCredentials((await settings.get()).credentials)[
           projectId
         ];
@@ -1048,7 +1057,7 @@ export default function plugin(bb: BbPluginApi) {
           )
         )
           throw new Error(
-            "Finish pending room creations that use this owner connection before disconnecting it",
+            "Finish pending room creations that use this creator connection before disconnecting it",
           );
         if (storeFor(projectId).state("pendingRoom", pendingRoomSchema))
           throw new Error(
@@ -1073,6 +1082,26 @@ export default function plugin(bb: BbPluginApi) {
           {},
         ),
       ),
+    setMemberAdmin: ({ projectId, ...input }) =>
+      serial(async () => {
+        const remote = await client(projectId);
+        await heartbeat(projectId, remote);
+        const identity = storeFor(projectId).identity()!;
+        if (identity.member.role !== "owner")
+          throw new Error("Only the room owner can appoint administrators");
+        if (identity.capabilities?.memberAdministration !== true)
+          throw new Error(
+            "This relay does not support administrator management. Upgrade the relay first.",
+          );
+        const result = await remote.call(
+          "member-admin",
+          z.object({ ok: z.boolean() }),
+          input,
+        );
+        await safeSync(projectId);
+        changed();
+        return result;
+      }),
     revoke: ({ projectId: scope, ...input }) =>
       serial(async () => {
         const projectId = selectProject(scope);

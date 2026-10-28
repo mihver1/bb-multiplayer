@@ -6,7 +6,15 @@ A working first slice of team collaboration: opt-in live conversation previews,
 contextual comments, replies, resolution, presence and deliberate handoff of
 feedback to the local agent's draft. No remote control of someone else's agent.
 
-## New in v0.4.0: create rooms from Multiplayer
+## New in v0.4.1: appoint administrators
+
+A room owner can appoint or remove administrators in **Multiplayer → Team project
+→ Administrators**, with explicit confirmation. Appointed teammates can use their
+existing membership to create and connect rooms for other local projects. The
+owner no longer needs to create every room for them. Update both relay and plugin
+to use administrator controls; older versions keep normal collaboration working.
+
+## Introduced in v0.4.0: create rooms from Multiplayer
 
 Owners can now create a room for another local project from the UI, without SSH
 or copying a new token. Both the plugin and relay need this update; older relays
@@ -144,7 +152,7 @@ for setup, recovery semantics, safeguards, and remaining two-machine verificatio
 Install the pinned release on another BB installation:
 
 ```sh
-bb plugin install git:https://github.com/mihver1/bb-multiplayer.git@v0.4.0
+bb plugin install git:https://github.com/mihver1/bb-multiplayer.git@v0.4.1
 ```
 
 If Multiplayer is already installed from a local path or a different tracked
@@ -236,17 +244,17 @@ selects the room; clients cannot select another room by passing its ID.
 
 1. On **Multiplayer → Team project**, select an unconnected local project.
 2. Choose **Create new room**.
-3. Select an existing **owner connection**. Its relay URL is used automatically;
+3. Select an existing **owner or administrator connection**. Its relay URL is used automatically;
    it is not necessary to paste credentials or change the source project.
 4. Enter a room name and press **Create room and connect**.
 
 The new room has its own owner identity and credential; the display name is
-inherited from the selected owner. Other members, comments and threads are **not
+inherited from the selected creator. Other members, comments and threads are **not
 copied**, and no conversation is published automatically. The selected target
 project connects to the new room; other project connections are unchanged.
 
-Only authenticated, non-revoked **owners** can create rooms; ordinary members and
-anonymous callers cannot. Owning a room does not grant access to other rooms or
+Only authenticated, non-revoked **owners or appointed administrators** can create
+rooms; ordinary members and anonymous callers cannot. Owning a room does not grant access to other rooms or
 the server-wide room inventory. Remote creation is capped at 100 total rooms per
 relay (including rooms provisioned locally), with a separate 10-requests/minute
 per-source-IP limit; behind a proxy that IP may be shared by the whole team.
@@ -257,15 +265,55 @@ requesting creation**. Only its hash is sent in the creation body; the response
 contains IDs, not a token. The relay stores an idempotent creation record. A lost
 response or plugin reload leaves a saved **Retry room creation** action, which
 finishes the same operation instead of making a duplicate. Keep the original
-owner connection and the target project's secret settings while retrying. A
+creator connection and the target project's secret settings while retrying. A
 pending target cannot be connected to another room or cleared via Disconnect,
-and its original owner connection cannot be disconnected until creation finishes;
+and its original creator connection cannot be disconnected until creation finishes;
 uncertain failures need retry/recovery, not discarded credentials. Newly created
 credentials live in BB, not a new credential file on the relay: include secret
 settings in backups.
 
 A **fresh relay** still needs its initial `relay:init` and owner connection once;
 there is deliberately no public anonymous room-creation endpoint.
+
+#### Delegate room creation to a teammate
+
+1. Invite the teammate and wait for them to join the room.
+2. As that room's owner, open **Multiplayer → Team project → Administrators**.
+3. Choose **Make administrator** beside the teammate, then **Confirm appointment**.
+4. After their next sync, they can select an unconnected project and use **Create
+   new room**, with their existing administrator connection. No replacement token
+   or server access is needed.
+
+**Remove administrator → Confirm removal** withdraws creation rights for that
+membership immediately at the relay. A stale client cache cannot authorize a new
+room. Assignment is scoped to a membership/credential, not every account with the
+same display name or every installation belonging to that person.
+
+| Permission in the source room | Owner | Administrator | Member |
+| --- | --- | --- | --- |
+| Create/connect a new project room on this relay | Yes | Yes | No |
+| Appoint/remove administrators | Yes | No | No |
+| Invite or revoke source-room members | Yes | No | No |
+| Read another member's private owner requests | No | No | No |
+| Browse/access unrelated rooms | No | No | No |
+
+Existing publication, comment and owner-request rules are unchanged: administrator
+status does not confer ownership of someone else's threads or agent control.
+Administrators **own the new rooms they create**. Removing their source-room
+administrator flag or membership does not retract those rooms or credentials;
+they retain the normal owner rights of those new rooms, including room creation.
+Grant this capability only to trusted teammates. This is not a global account
+ban or an organizational super-admin role.
+
+An in-flight creation whose acknowledgement was lost retains its token and request
+ID. If its creator is demoted before retry, an owner must restore that membership's
+creation rights to complete recovery; do not clear pending state or issue a second
+creation. The retry returns the same room rather than creating a duplicate.
+
+For protocol compatibility, v1 `role` remains `owner`/`member`. A new optional
+`admin` flag and `capabilities.memberAdministration` describe the extension;
+old clients ignore them and continue syncing. The relay adds `member_admins`
+without changing existing membership rows. No one is promoted automatically.
 
 #### Local operator alternative
 
@@ -295,7 +343,7 @@ npm run relay:list-rooms -- <nextCursor>
   and revocation apply independently to each room.
 
 Existing single-room databases need **no manual migration or reinitialization**:
-the relay adds its creation-record table automatically. Old credentials,
+the relay adds its creation-record and administrator-grant tables automatically. Old credentials,
 invitations, history and cursors remain valid. Protocol v1 and
 existing clients are unchanged. The updated plugin supports **one room connection
 per local project**, with multiple projects connected simultaneously, including
@@ -456,9 +504,11 @@ legacy database reopening, private credential creation/rollback, local CLI comma
 and simultaneous plugin connections to one or multiple origins. Plugin tests cover
 legacy migration and retry after secret-store failure, identical IDs across relays,
 project-scoped disconnect/revocation, moved local threads, UI selection and links.
-Room creation tests cover owner-only HTTP authorization, streamed-body revocation,
+Room creation tests cover owner/admin HTTP authorization, streamed-body revocation,
 rate/room caps, secret-store failures, lost acknowledgements, durable retries,
-no automatic sharing and UI onboarding without token copying.
+no automatic sharing and UI onboarding without token copying. Administrator tests
+cover appointment/removal, stale permissions, cross-room and self-promotion denials,
+non-delegation, legacy client/schema compatibility, persistence and confirmed UI actions.
 Live BB install/onboarding is
 checked separately; no real team conversation is shared during those checks.
 
@@ -475,7 +525,8 @@ checked separately; no real team conversation is shared during those checks.
 - `shared/discussions.ts` — deterministic grouping and parent-preserving previews.
 - `lib/discussion-target.ts` — ephemeral thread-scoped message-action targets.
 - `plugin/` — relay client, local persistence, allowlisted message projection.
-- `components/create-room.tsx` — owner-authorized room creation and retry UI.
+- `components/create-room.tsx` — owner/admin-authorized room creation and retry UI.
+- `components/member-administration.tsx` — owner-only appointment/removal UI.
 - `plugin/room-creation.ts` — non-secret pending-creation metadata.
 - `shared/rooms.ts` — room-creation wire schemas.
 - `shared/protocol.ts` — runtime-validated wire schemas.

@@ -27,6 +27,7 @@ import { DiscussionList } from "./components/discussion-list";
 import { groupDiscussions } from "./shared/discussions";
 import { TeamThreadList } from "./components/team-thread-list";
 import { CreateRoomForm } from "./components/create-room";
+import { MemberAdministration } from "./components/member-administration";
 import {
   OpenNativeMirror,
   NativeMirrorBanner,
@@ -306,10 +307,10 @@ function Connect({
         </form>
       )}
       <Notice>
-        Already own a room? Create another here using that saved owner
-        connection — no SSH or token copying. A fresh relay needs its initial
-        owner setup once. Each local project connects independently; other
-        projects stay connected.
+        Owners and appointed administrators can create rooms here using their
+        saved connection — no SSH or token copying. A fresh relay needs its
+        initial owner setup once. Each local project connects independently;
+        other projects stay connected.
       </Notice>
     </div>
   );
@@ -603,6 +604,13 @@ function ProjectTeamPage({
                       {member.name}
                       {member.id === identity.member.id ? " (you)" : ""}
                     </p>
+                    <p className="text-xs font-medium text-muted-foreground">
+                      {member.role === "owner"
+                        ? "Owner"
+                        : member.admin && !member.revoked
+                          ? "Administrator"
+                          : "Member"}
+                    </p>
                     <p className="text-xs text-muted-foreground">
                       {member.revoked
                         ? "Access revoked"
@@ -613,6 +621,7 @@ function ProjectTeamPage({
                   </div>
                   {identity.member.role === "owner" &&
                     member.id !== identity.member.id &&
+                    member.role !== "owner" &&
                     !member.revoked && (
                       <Button
                         size="sm"
@@ -627,6 +636,13 @@ function ProjectTeamPage({
             })}
           </div>
         </section>
+        <MemberAdministration
+          key={`${projectId}:${identity.room.id}:${identity.member.id}`}
+          projectId={projectId}
+          identity={identity}
+          online={data.online}
+          onChanged={refresh}
+        />
         {revokeId && (
           <Notice>
             <p className="mb-3">

@@ -6,6 +6,7 @@ import {
   snapshotSchema,
   threadSchema,
   commentSchema,
+  setMemberAdminSchema,
   type Identity,
   type NewComment,
   type SharedThread,
@@ -75,6 +76,9 @@ export class RelayStore {
       );
       CREATE TABLE IF NOT EXISTS request_events (seq INTEGER PRIMARY KEY AUTOINCREMENT, requestId TEXT NOT NULL REFERENCES message_requests(id));
       CREATE INDEX IF NOT EXISTS requests_participants ON message_requests(roomId, ownerId, authorId);
+      CREATE TABLE IF NOT EXISTS member_admins (
+        memberId TEXT PRIMARY KEY REFERENCES members(id)
+      );
       CREATE TABLE IF NOT EXISTS room_creations (
         creatorId TEXT NOT NULL REFERENCES members(id), requestId TEXT NOT NULL,
         roomId TEXT NOT NULL REFERENCES rooms(id), memberId TEXT NOT NULL REFERENCES members(id),
@@ -95,7 +99,7 @@ export class RelayStore {
       return this.createRoom(roomName, ownerName);
     })();
   }
-  // Local operator bootstrap. Remote provisioning uses the owner-only method below.
+  // Local operator bootstrap. Remote provisioning requires an owner or appointed admin.
   createRoom(roomName: string, ownerName: string) {
     roomName = name.parse(roomName);
     ownerName = name.parse(ownerName);
@@ -110,17 +114,19 @@ export class RelayStore {
       return { roomId, memberId, token };
     })();
   }
-  createRoomForOwner(actor: Actor, input: CreateRoom) {
+  createRoomForMember(actor: Actor, input: CreateRoom) {
     input = createRoomSchema.parse(input);
     return this.db.transaction(() => {
       const current = this.db
         .prepare(
-          "SELECT role FROM members WHERE id=? AND roomId=? AND revoked=0",
+          `SELECT m.role, m.name, EXISTS(SELECT 1 FROM member_admins a WHERE a.memberId=m.id) AS admin
+           FROM members m WHERE m.id=? AND m.roomId=? AND m.revoked=0`,
         )
-        .get(actor.id, actor.roomId) as { role: string } | undefined;
+        .get(actor.id, actor.roomId) as
+        { role: string; name: string; admin: number } | undefined;
       if (!current) return fail(401, "Invalid or revoked member credential");
-      if (current.role !== "owner")
-        fail(403, "Only a room owner can create rooms");
+      if (current.role !== "owner" && !current.admin)
+        fail(403, "Only a room owner or administrator can create rooms");
       const existing = this.db
         .prepare(
           "SELECT roomId, memberId, name, tokenHash FROM room_creations WHERE creatorId=? AND requestId=?",
@@ -155,7 +161,7 @@ export class RelayStore {
         .run(roomId, input.name);
       this.db
         .prepare("INSERT INTO members VALUES (?, ?, ?, 'owner', ?, ?, 0)")
-        .run(memberId, roomId, actor.name, input.tokenHash, this.now());
+        .run(memberId, roomId, current.name, input.tokenHash, this.now());
       this.db
         .prepare("INSERT INTO room_creations VALUES (?, ?, ?, ?, ?, ?)")
         .run(
@@ -186,6 +192,37 @@ export class RelayStore {
     if (!actor) return fail(401, "Invalid or revoked member credential");
     return actor;
   }
+  setMemberAdmin(actor: Actor, input: { memberId: string; admin: boolean }) {
+    input = setMemberAdminSchema.parse(input);
+    return this.db.transaction(() => {
+      const current = this.db
+        .prepare(
+          "SELECT role FROM members WHERE id=? AND roomId=? AND revoked=0",
+        )
+        .get(actor.id, actor.roomId) as { role: string } | undefined;
+      if (!current) return fail(401, "Invalid or revoked member credential");
+      if (current.role !== "owner")
+        fail(403, "Only the room owner can appoint administrators");
+      const target = this.db
+        .prepare(
+          "SELECT role FROM members WHERE id=? AND roomId=? AND revoked=0",
+        )
+        .get(input.memberId, actor.roomId) as { role: string } | undefined;
+      if (!target) return fail(404, "Active member not found");
+      if (target.role === "owner" || input.memberId === actor.id)
+        fail(403, "The owner's role cannot be changed");
+      const result = input.admin
+        ? this.db
+            .prepare("INSERT OR IGNORE INTO member_admins(memberId) VALUES (?)")
+            .run(input.memberId)
+        : this.db
+            .prepare("DELETE FROM member_admins WHERE memberId=?")
+            .run(input.memberId);
+      // Idempotent assignment: a retry must not toggle permissions or duplicate events.
+      if (result.changes) this.event(actor.roomId, "member", input.memberId);
+      return { ok: true };
+    })();
+  }
   identity(actor: Actor): Identity {
     this.db
       .prepare("UPDATE members SET lastSeenAt = ? WHERE id = ?")
@@ -196,17 +233,25 @@ export class RelayStore {
     const members = (
       this.db
         .prepare(
-          "SELECT id, name, role, lastSeenAt, revoked FROM members WHERE roomId = ? ORDER BY name LIMIT 100",
+          `SELECT m.id, m.name, m.role, m.lastSeenAt, m.revoked,
+           EXISTS(SELECT 1 FROM member_admins a WHERE a.memberId=m.id) AS admin
+           FROM members m WHERE m.roomId = ? ORDER BY m.name LIMIT 100`,
         )
-        .all(actor.roomId) as Actor[]
+        .all(actor.roomId) as (Actor & { admin: number })[]
     ).map((m) => ({
       id: m.id,
       name: m.name,
       role: m.role,
+      admin: !m.revoked && Boolean(m.admin),
       lastSeenAt: m.lastSeenAt,
       revoked: Boolean(m.revoked),
     }));
-    return { room, member: members.find((m) => m.id === actor.id)!, members };
+    return {
+      room,
+      member: members.find((m) => m.id === actor.id)!,
+      members,
+      capabilities: { memberAdministration: true },
+    };
   }
   invite(actor: Actor) {
     if (actor.role !== "owner")

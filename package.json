@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-multiplayer",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "type": "module",
   "engines": {
     "node": "^22.22.2 || ^24.15.0 || >=26.0.0",
@@ -24,7 +24,7 @@
     "build": "bb plugin build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "format:check": "prettier --check server.ts host.ts app.tsx app.css shared plugin relay provider tests docs hooks/use-team-query.ts lib/register-thread-panel.ts lib/discussion-target.ts components/floating-discussion.tsx components/discussion-list.tsx components/icon-action.tsx components/team-thread-list.tsx components/project-header.tsx components/message-requests.tsx components/native-mirror.tsx components/create-room.tsx vitest.config.ts",
+    "format:check": "prettier --check server.ts host.ts app.tsx app.css shared plugin relay provider tests docs hooks/use-team-query.ts lib/register-thread-panel.ts lib/discussion-target.ts components/floating-discussion.tsx components/discussion-list.tsx components/icon-action.tsx components/team-thread-list.tsx components/project-header.tsx components/message-requests.tsx components/native-mirror.tsx components/create-room.tsx components/member-administration.tsx vitest.config.ts",
     "relay:init": "tsx relay/main.ts init",
     "relay:create-room": "tsx relay/main.ts create-room",
     "relay:list-rooms": "tsx relay/main.ts list-rooms",

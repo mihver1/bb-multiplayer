@@ -76,7 +76,9 @@ export const commentSchema = newCommentSchema.extend({
 export const memberSchema = z.object({
   id: uuid,
   name,
+  // Additive flag: older v1 clients still see an ordinary member and keep syncing.
   role: z.enum(["owner", "member"]),
+  admin: z.boolean().optional(),
   lastSeenAt: z.number().int(),
   revoked: z.boolean(),
 });
@@ -84,7 +86,25 @@ export const identitySchema = z.object({
   room: z.object({ id: uuid, name }),
   member: memberSchema,
   members: z.array(memberSchema).max(100),
+  capabilities: z
+    .object({ memberAdministration: z.boolean().optional() })
+    .optional(),
 });
+export const setMemberAdminSchema = z
+  .object({ memberId: uuid, admin: z.boolean() })
+  .strict();
+export function canCreateRooms(
+  member:
+    | Pick<z.infer<typeof memberSchema>, "role" | "admin" | "revoked">
+    | null
+    | undefined,
+): boolean {
+  return Boolean(
+    member &&
+    !member.revoked &&
+    (member.role === "owner" || member.admin === true),
+  );
+}
 export const eventsSchema = z.object({
   events: z
     .array(

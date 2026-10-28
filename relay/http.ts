@@ -11,6 +11,7 @@ import {
   newCommentSchema,
   snapshotSchema,
   ProtocolError,
+  setMemberAdminSchema,
 } from "../shared/protocol";
 import { RelayStore } from "./store";
 import { createRoomSchema } from "../shared/rooms";
@@ -80,7 +81,7 @@ export function createRelayServer(store: RelayStore) {
         return send(res, 200, {
           ok: true,
           protocol: 1,
-          capabilities: { roomCreation: true },
+          capabilities: { roomCreation: true, memberAdministration: true },
         });
       if (route === "POST /v1/join") {
         const input = z
@@ -101,7 +102,7 @@ export function createRelayServer(store: RelayStore) {
       switch (route) {
         case "POST /v1/rooms": {
           const input = createRoomSchema.parse(await body(req));
-          return send(res, 200, store.createRoomForOwner(freshActor(), input));
+          return send(res, 200, store.createRoomForMember(freshActor(), input));
         }
         case "GET /v1/request-events": {
           const after = z.coerce
@@ -129,6 +130,10 @@ export function createRelayServer(store: RelayStore) {
             .strict()
             .parse(await body(req));
           return send(res, 200, store.invite(freshActor()));
+        case "POST /v1/member-admin": {
+          const input = setMemberAdminSchema.parse(await body(req));
+          return send(res, 200, store.setMemberAdmin(freshActor(), input));
+        }
         case "POST /v1/revoke": {
           const input = z
             .object({ memberId: uuid })

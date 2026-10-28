@@ -93,7 +93,10 @@ it("deduplicates creation across retries/restarts, rejects changed requests and 
   expect(await post(credential.token, value)).toEqual(first);
   const reopened = new RelayStore(db);
   expect(
-    reopened.createRoomForOwner(reopened.authenticate(credential.token), value),
+    reopened.createRoomForMember(
+      reopened.authenticate(credential.token),
+      value,
+    ),
   ).toEqual(first.data);
   expect(
     (await post(credential.token, { ...value, name: "Changed" })).status,
@@ -119,15 +122,15 @@ it("deduplicates creation across retries/restarts, rejects changed requests and 
 it("bounds remote creation across all owners and still permits replay at the cap", () => {
   const owner = store.authenticate(credential.token),
     value = input();
-  const created = store.createRoomForOwner(owner, value);
+  const created = store.createRoomForMember(owner, value);
   for (let i = 2; i < REMOTE_ROOM_LIMIT; i++)
     store.createRoom(`Room ${i}`, "Owner");
-  expect(() => store.createRoomForOwner(owner, input())).toThrow("limit");
-  expect(store.createRoomForOwner(owner, value)).toEqual(created);
+  expect(() => store.createRoomForMember(owner, input())).toThrow("limit");
+  expect(store.createRoomForMember(owner, value)).toEqual(created);
   const other = store.authenticate(
     store.createRoom("Operator bypass", "Owner").token,
   );
-  expect(() => store.createRoomForOwner(other, input())).toThrow("limit");
+  expect(() => store.createRoomForMember(other, input())).toThrow("limit");
 });
 it("advertises creation capability, validates fields and rate-limits only its own route", async () => {
   expect(
