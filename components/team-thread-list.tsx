@@ -25,7 +25,10 @@ import { ProjectHeader } from "./project-header";
 import { cn } from "../lib/utils";
 
 /** Keep each family's rows together, preserving the supplied sibling order. */
-function nestThreadRows(threads: PluginSidebarThread[]) {
+function nestThreadRows(
+  threads: PluginSidebarThread[],
+  collapsed: ReadonlySet<string>,
+) {
   const ids = new Set(threads.map((thread) => thread.id));
   const children = new Map<string | null, PluginSidebarThread[]>();
   for (const thread of threads) {
@@ -54,20 +57,36 @@ function nestThreadRows(threads: PluginSidebarThread[]) {
   for (const root of children.get(null) ?? []) appendTree(root);
   // Missing/filtered parents become roots; malformed cycles must not hide rows.
   for (const thread of threads) if (!visited.has(thread.id)) appendTree(thread);
-  return rows;
+
+  // Collapse the completed forest, not the traversal: skipped descendants must
+  // stay visited so the cycle fallback cannot bring them back as roots.
+  let collapsedDepth: number | null = null;
+  return rows.flatMap((row, index) => {
+    if (collapsedDepth !== null && row.depth > collapsedDepth) return [];
+    const hasChildren = (rows[index + 1]?.depth ?? 0) > row.depth;
+    collapsedDepth =
+      hasChildren && collapsed.has(row.thread.id) ? row.depth : null;
+    return [{ ...row, hasChildren }];
+  });
 }
 
 function LocalRow({
   thread,
   depth,
+  hasChildren,
+  collapsed,
   active,
   shared,
+  onToggle,
   onNavigate,
 }: {
   thread: PluginSidebarThread;
   depth: number;
+  hasChildren: boolean;
+  collapsed: boolean;
   active: boolean;
   shared: boolean;
+  onToggle: () => void;
   onNavigate: () => void;
 }) {
   const navigate = useBbNavigate(),
@@ -91,6 +110,25 @@ function LocalRow({
         // Bound the visual indent so deeply nested threads still have room for a title.
         style={{ paddingInlineStart: `${0.5 + Math.min(depth, 6)}rem` }}
       >
+        {hasChildren ? (
+          <IconAction
+            label={`${collapsed ? "Expand" : "Collapse"} child threads for ${thread.displayTitle}`}
+            aria-expanded={!collapsed}
+            className="mr-1 size-6"
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggle();
+            }}
+          >
+            <Icon
+              name={collapsed ? "ChevronRight" : "ChevronDown"}
+              aria-hidden="true"
+              className="size-3.5"
+            />
+          </IconAction>
+        ) : (
+          <span aria-hidden="true" className="mr-1 size-6 shrink-0" />
+        )}
         <a
           href={thread.href}
           data-sidebar-thread-shortcut-target=""
@@ -177,8 +215,26 @@ export function TeamThreadList(props: PluginThreadListProps) {
     navigate = useBbNavigate();
   const load = useCallback(() => rpc.call("teamThreads"), [rpc]);
   const { data: team, error } = useTeamQuery(load);
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [collapsedThreads, setCollapsedThreads] = useState<Set<string>>(
+    () => new Set(),
+  );
+  // Search reveals matches without forgetting the normal list's folded branches.
+  const [collapsedSearchThreads, setCollapsedSearchThreads] = useState<
+    Set<string>
+  >(() => new Set());
   const needle = query.trim().toLocaleLowerCase();
+  const foldedThreads = needle ? collapsedSearchThreads : collapsedThreads;
+  function toggleThread(id: string) {
+    const setFolded = needle ? setCollapsedSearchThreads : setCollapsedThreads;
+    setFolded((old) => {
+      const next = new Set(old);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
   const local = native.threads.filter(
     (t) =>
       !t.isHidden &&
@@ -228,6 +284,7 @@ export function TeamThreadList(props: PluginThreadListProps) {
       });
   }
   let remaining = limit;
+  let visibleCount = 0;
   return (
     <div
       className="h-full overflow-y-auto bg-sidebar px-2 pb-4"
@@ -241,6 +298,7 @@ export function TeamThreadList(props: PluginThreadListProps) {
           value={query}
           onChange={(e) => {
             setQuery(e.target.value);
+            setCollapsedSearchThreads(new Set());
             setLimit(100);
           }}
         />
@@ -297,23 +355,25 @@ export function TeamThreadList(props: PluginThreadListProps) {
         const projectTeam = teams.find((t) => t.projectId === project.id);
         const remotes = remote.filter((t) => t.projectId === project.id);
         if (!locals.length && !remotes.length && needle) return null;
-        const projectRows = collapsed.has(project.id)
+        const projectCollapsed = collapsedProjects.has(project.id);
+        const nestedRows = projectCollapsed
           ? []
-          : nestThreadRows(locals).slice(0, remaining);
+          : nestThreadRows(locals, foldedThreads);
+        visibleCount +=
+          nestedRows.length + (projectCollapsed ? 0 : remotes.length);
+        const projectRows = nestedRows.slice(0, remaining);
         remaining -= projectRows.length;
-        const remoteRows = collapsed.has(project.id)
-          ? []
-          : remotes.slice(0, remaining);
+        const remoteRows = projectCollapsed ? [] : remotes.slice(0, remaining);
         remaining -= remoteRows.length;
         return (
           <section key={project.id} className="mt-2" aria-label={project.name}>
             <ProjectHeader
               project={project}
               shared={Boolean(projectTeam)}
-              collapsed={collapsed.has(project.id)}
+              collapsed={projectCollapsed}
               active={props.activeProjectId === project.id}
               onToggle={() =>
-                setCollapsed((old) => {
+                setCollapsedProjects((old) => {
                   const next = new Set(old);
                   next.has(project.id)
                     ? next.delete(project.id)
@@ -323,15 +383,18 @@ export function TeamThreadList(props: PluginThreadListProps) {
               }
               onNavigate={props.onNavigate}
             />
-            {!collapsed.has(project.id) && (
+            {!projectCollapsed && (
               <>
-                {projectRows.map(({ thread, depth }) => (
+                {projectRows.map(({ thread, depth, hasChildren }) => (
                   <LocalRow
                     key={thread.id}
                     thread={thread}
                     depth={depth}
+                    hasChildren={hasChildren}
+                    collapsed={foldedThreads.has(thread.id)}
                     active={thread.id === props.activeThreadId}
                     shared={sharedLocal.has(thread.id)}
+                    onToggle={() => toggleThread(thread.id)}
                     onNavigate={props.onNavigate}
                   />
                 ))}
@@ -378,7 +441,7 @@ export function TeamThreadList(props: PluginThreadListProps) {
           </section>
         );
       })}
-      {local.length + remote.length > limit && (
+      {visibleCount > limit && (
         <button
           className="w-full p-2 text-xs"
           onClick={() => setLimit((n) => n + 100)}

@@ -445,6 +445,120 @@ it.each([false, true])(
     expect(onNavigate).toHaveBeenCalledOnce();
   },
 );
+it.each([false, true])(
+  "collapses branches independently without navigating and preserves nested folds (archived: %s)",
+  async (archived) => {
+    const onNavigate = vi.fn();
+    const threads = [
+      makeThread("parent"),
+      makeThread("child", { parentThreadId: "parent" }),
+      makeThread("grandchild", { parentThreadId: "child" }),
+      makeThread("sibling", { parentThreadId: "parent" }),
+      makeThread("other-parent"),
+      makeThread("other-child", { parentThreadId: "other-parent" }),
+      makeThread("other-project", { projectId: "proj_b" }),
+    ].map((thread) => ({ ...thread, isArchived: archived }));
+    const slot = renderSlot(
+      { component: TeamThreadList },
+      { ...props, activeThreadId: "grandchild", onNavigate },
+      {
+        sidebarThreads: { ...sidebar, threads },
+        rpc: { teamThreads: team },
+      },
+    );
+    await slot.findByText("Project A · Team");
+    if (archived)
+      fireEvent.click(
+        slot.getByRole("button", { name: "Show archived threads" }),
+      );
+    const parent = slot.getByRole("button", {
+      name: "Collapse child threads for parent",
+    });
+    expect(parent.getAttribute("type")).toBe("button");
+    expect(parent.getAttribute("aria-expanded")).toBe("true");
+    expect(parent.closest("a")).toBeNull();
+    expect(
+      parent
+        .querySelector('[data-icon="ChevronDown"]')
+        ?.getAttribute("aria-hidden"),
+    ).toBe("true");
+    expect(
+      slot.queryByRole("button", { name: /child threads for grandchild/ }),
+    ).toBeNull();
+    expect(
+      slot.queryByRole("button", { name: /child threads for sibling/ }),
+    ).toBeNull();
+    fireEvent.focus(parent);
+    expect(
+      await slot.findByRole("tooltip", {
+        name: "Collapse child threads for parent",
+      }),
+    ).toBeTruthy();
+    fireEvent.blur(parent);
+
+    fireEvent.click(
+      slot.getByRole("button", { name: "Collapse child threads for child" }),
+    );
+    expect(slot.queryByRole("link", { name: "grandchild" })).toBeNull();
+    expect(slot.getByRole("link", { name: "sibling" })).toBeTruthy();
+    fireEvent.click(parent);
+    expect(parent.getAttribute("aria-expanded")).toBe("false");
+    expect(parent.querySelector('[data-icon="ChevronRight"]')).toBeTruthy();
+    expect(slot.getByRole("link", { name: "parent" })).toBeTruthy();
+    expect(slot.queryByRole("link", { name: "child" })).toBeNull();
+    expect(slot.queryByRole("link", { name: "grandchild" })).toBeNull();
+    expect(slot.queryByRole("link", { name: "sibling" })).toBeNull();
+    expect(slot.getByRole("link", { name: "other-child" })).toBeTruthy();
+    expect(slot.getByRole("link", { name: "other-project" })).toBeTruthy();
+    if (!archived)
+      expect(
+        slot.getByRole("button", { name: "Open shared thread Remote task" }),
+      ).toBeTruthy();
+
+    // Project folding and lifecycle switching must not reset branch state.
+    const project = slot.getByRole("button", { name: "Project A · Team" });
+    fireEvent.click(project);
+    fireEvent.click(project);
+    fireEvent.click(
+      slot.getByRole("button", {
+        name: archived ? "Show active threads" : "Show archived threads",
+      }),
+    );
+    fireEvent.click(
+      slot.getByRole("button", {
+        name: archived ? "Show archived threads" : "Show active threads",
+      }),
+    );
+    fireEvent.click(
+      slot.getByRole("button", { name: "Expand child threads for parent" }),
+    );
+    expect(slot.getByRole("link", { name: "child" })).toBeTruthy();
+    expect(slot.getByRole("link", { name: "sibling" })).toBeTruthy();
+    expect(slot.queryByRole("link", { name: "grandchild" })).toBeNull();
+    fireEvent.click(
+      slot.getByRole("button", { name: "Expand child threads for child" }),
+    );
+    expect(
+      slot
+        .getByRole("link", { name: "grandchild" })
+        .getAttribute("aria-current"),
+    ).toBe("page");
+    expect(slot.inspection.navigateCalls).toEqual([]);
+    expect(slot.inspection.sdkCalls).toEqual([]);
+    expect(onNavigate).not.toHaveBeenCalled();
+
+    // The row remains a navigation link; only its separate chevron folds it.
+    fireEvent.click(slot.getByRole("link", { name: "parent" }));
+    expect(slot.inspection.navigateCalls).toEqual([
+      { method: "toThread", threadId: "parent" },
+    ]);
+    expect(onNavigate).toHaveBeenCalledOnce();
+    expect(slot.getByRole("link", { name: "grandchild" })).toBeTruthy();
+    expect(
+      slot.getByRole("button", { name: "Actions for parent" }),
+    ).toBeTruthy();
+  },
+);
 it("keeps children visible as roots when their parent is hidden, archived, missing or in another project", async () => {
   const slot = renderSlot({ component: TeamThreadList }, props, {
     sidebarThreads: {
@@ -515,6 +629,50 @@ it("does not lose matching descendants when search excludes their parent", async
       .paddingInlineStart,
   ).toBe("2.5rem");
 });
+it("reveals matching folded branches during search without losing normal collapse state", async () => {
+  const slot = renderSlot({ component: TeamThreadList }, props, {
+    sidebarThreads: {
+      ...sidebar,
+      threads: [
+        makeThread("task-parent"),
+        makeThread("task-child", { parentThreadId: "task-parent" }),
+        makeThread("task-grandchild", { parentThreadId: "task-child" }),
+      ],
+    },
+    rpc: { teamThreads: team },
+  });
+  await slot.findByText("Project A · Team");
+  fireEvent.click(
+    slot.getByRole("button", {
+      name: "Collapse child threads for task-parent",
+    }),
+  );
+  expect(slot.queryByRole("link", { name: "task-child" })).toBeNull();
+  const search = slot.getByRole("textbox", { name: "Search threads" });
+  fireEvent.change(search, { target: { value: "task" } });
+  expect(slot.getByRole("link", { name: "task-child" })).toBeTruthy();
+  expect(slot.getByRole("link", { name: "task-grandchild" })).toBeTruthy();
+  expect(
+    slot
+      .getByRole("button", { name: "Collapse child threads for task-parent" })
+      .getAttribute("aria-expanded"),
+  ).toBe("true");
+  // Search branches can still be folded, but only for the current query.
+  fireEvent.click(
+    slot.getByRole("button", { name: "Collapse child threads for task-child" }),
+  );
+  expect(slot.queryByRole("link", { name: "task-grandchild" })).toBeNull();
+  fireEvent.change(search, { target: { value: "child" } });
+  expect(slot.queryByRole("link", { name: "task-parent" })).toBeNull();
+  expect(slot.getByRole("link", { name: "task-child" })).toBeTruthy();
+  expect(slot.getByRole("link", { name: "task-grandchild" })).toBeTruthy();
+  fireEvent.change(search, { target: { value: "" } });
+  expect(slot.queryByRole("link", { name: "task-child" })).toBeNull();
+  fireEvent.click(
+    slot.getByRole("button", { name: "Expand child threads for task-parent" }),
+  );
+  expect(slot.getByRole("link", { name: "task-grandchild" })).toBeTruthy();
+});
 it("applies pagination after nesting so a newer child never precedes its parent", async () => {
   const slot = renderSlot({ component: TeamThreadList }, props, {
     sidebarThreads: {
@@ -550,6 +708,50 @@ it("applies pagination after nesting so a newer child never precedes its parent"
       .every((row) => row.parentElement!.style.paddingInlineStart === "1.5rem"),
   ).toBe(true);
 });
+it("paginates only visible rows and frees space for other local and remote threads on collapse", async () => {
+  const slot = renderSlot({ component: TeamThreadList }, props, {
+    sidebarThreads: {
+      ...sidebar,
+      threads: [
+        makeThread("parent"),
+        ...Array.from({ length: 105 }, (_, i) =>
+          makeThread(`child-${i}`, { parentThreadId: "parent" }),
+        ),
+        makeThread("later-root", { updatedAt: 0 }),
+        makeThread("other-project", { projectId: "proj_b" }),
+      ],
+    },
+    rpc: { teamThreads: team },
+  });
+  await slot.findByText("Project A · Team");
+  const rows = () =>
+    slot.container.querySelectorAll("[data-sidebar-thread-id]");
+  expect(rows()).toHaveLength(100);
+  expect(slot.getByRole("button", { name: "Show more threads" })).toBeTruthy();
+  expect(slot.queryByRole("link", { name: "later-root" })).toBeNull();
+  expect(slot.queryByRole("link", { name: "other-project" })).toBeNull();
+  fireEvent.click(
+    slot.getByRole("button", { name: "Collapse child threads for parent" }),
+  );
+  expect(rows()).toHaveLength(3);
+  expect(slot.queryByRole("button", { name: "Show more threads" })).toBeNull();
+  expect(slot.getByRole("link", { name: "later-root" })).toBeTruthy();
+  expect(slot.getByRole("link", { name: "other-project" })).toBeTruthy();
+  expect(
+    slot.getByRole("button", { name: "Open shared thread Remote task" }),
+  ).toBeTruthy();
+  fireEvent.click(
+    slot.getByRole("button", { name: "Expand child threads for parent" }),
+  );
+  expect(rows()).toHaveLength(100);
+  fireEvent.click(slot.getByRole("button", { name: "Project A · Team" }));
+  expect(rows()).toHaveLength(1);
+  expect(slot.queryByRole("button", { name: "Show more threads" })).toBeNull();
+  fireEvent.click(slot.getByRole("button", { name: "Project A · Team" }));
+  fireEvent.click(slot.getByRole("button", { name: "Show more threads" }));
+  expect(rows()).toHaveLength(108);
+  expect(slot.queryByRole("button", { name: "Show more threads" })).toBeNull();
+});
 it("renders cyclic parent links only once and bounds deep indentation", async () => {
   const slot = renderSlot({ component: TeamThreadList }, props, {
     sidebarThreads: {
@@ -577,4 +779,31 @@ it("renders cyclic parent links only once and bounds deep indentation", async ()
     slot.getByRole("link", { name: "level-19" }).parentElement!.style
       .paddingInlineStart,
   ).toBe("6.5rem");
+  // Cycles form a finite display tree; back-edges and self-links are not children.
+  expect(
+    slot.queryByRole("button", { name: /child threads for cycle-b/ }),
+  ).toBeNull();
+  expect(
+    slot.queryByRole("button", { name: /child threads for self/ }),
+  ).toBeNull();
+  fireEvent.click(
+    slot.getByRole("button", { name: "Collapse child threads for cycle-a" }),
+  );
+  expect(slot.getByRole("link", { name: "cycle-a" })).toBeTruthy();
+  expect(slot.queryByRole("link", { name: "cycle-b" })).toBeNull();
+  fireEvent.click(
+    slot.getByRole("button", { name: "Collapse child threads for level-0" }),
+  );
+  expect(
+    slot.container.querySelectorAll("[data-sidebar-thread-id]"),
+  ).toHaveLength(3);
+  fireEvent.click(
+    slot.getByRole("button", { name: "Expand child threads for cycle-a" }),
+  );
+  fireEvent.click(
+    slot.getByRole("button", { name: "Expand child threads for level-0" }),
+  );
+  expect(
+    slot.container.querySelectorAll("[data-sidebar-thread-id]"),
+  ).toHaveLength(23);
 });

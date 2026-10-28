@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Add independent expand/collapse chevrons to local parent threads in the sidebar,
+  hiding the whole descendant branch while preserving nested collapse state.
+- Reveal matching branches during search without resetting the normal list's
+  collapse state; count only visible rows for pagination.
+- Keep native row navigation and menus separate from branch toggles in both active
+  and archived views. No relay changes are required.
+
 ## v0.4.2
 
 - Open shared conversations in native BB views by default, reusing existing

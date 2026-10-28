@@ -92,9 +92,14 @@ owners** require plugin and relay v0.2.0 or later for the full workflow.
 - The relay must be upgraded for proposals. Older relays keep conversation/comment
   sync working and show proposal submission as unavailable. Requests use a
   separate event feed and are visible only to their author and thread owner.
-- The list groups local parent/child threads under projects; builtin section and
-  environment organization is not yet replicated. Enabling it may select it;
-  **Settings → Appearance → Sidebar** can pin the builtin list instead.
+- The list groups local parent/child threads under projects. Use the chevron beside
+  a parent to collapse or expand its entire branch; clicking its title still opens
+  the thread. Nested collapse state survives folding the parent/project and toggling
+  the archive view while the list is mounted. Search temporarily reveals matching
+  branches without resetting the normal list's collapse state.
+- Builtin section and environment organization is not yet replicated. Enabling the
+  list may select it; **Settings → Appearance → Sidebar** can pin the builtin list
+  instead.
 
 ## Experimental native thread view
 
